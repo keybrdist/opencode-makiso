@@ -1,14 +1,43 @@
 ---
 name: event-crusher
-description: Publish, pull, search, and reply to OpenCode events
-argument-hint: e.g. "check events", ".pullprs", ".pulljira", ".pullbugs"
+description: Publish, pull, search, and reply to OpenCode events with PR/Jira integration
+argument-hint: e.g. "check events", ".check-prs", ".check-jira", ".checkbugs"
 ---
 
 # OpenCode Event Crusher
 
 A local-first pub/sub system for coordinating LLM agents with events stored in SQLite.
+Enhanced with PR comment awareness, Jira status tracking, and workflow routing.
 
-## Event Checking
+## Automatic Skill Trigger
+
+**Load this skill IMMEDIATELY when user says:**
+
+| Trigger Phrase | Action |
+|----------------|--------|
+| "check events" | Load skill, run Step 1-3 |
+| "any pending tasks?" | Load skill, run Step 1-3 |
+| "check event" | Load skill, run Step 1-3 |
+| "pending events" | Load skill, run Step 1-3 |
+| "events" | Load skill, run Step 1-3 |
+| ".check-prs", ".checkprs" | Run `.check-prs` sub-command |
+| ".check-jira", ".checkjira" | Run `.check-jira` sub-command |
+| ".checkbugs", ".check-bugs" | Run `.checkbugs` sub-command |
+| ".checkall", ".check-all" | Run `.checkall` sub-command |
+| ".pullprs", ".pulljira", ".pullbugs" | Run legacy sub-commands |
+
+**Do NOT:**
+- Use laravel-boost tools for log checking when user says "check events"
+- Guess what "events" means - load event-crusher skill first
+- Ask user to clarify - just load the skill
+
+**Do:**
+- Load skill immediately on trigger phrases
+- Use `oc-events` CLI commands
+- Use Bitbucket MCP for PR context
+- Use Atlassian MCP for Jira context
+
+## Enhanced Event Checking
 
 When the user asks you to check for events (e.g., "check events", "any pending tasks?"):
 
@@ -17,25 +46,47 @@ When the user asks you to check for events (e.g., "check events", "any pending t
 oc-events pull inbox --agent @opencode
 ```
 
-### Step 2: If inbox is empty, check all topics for pending events
+### Step 2: If inbox empty, check all topics for pending events
 ```bash
 oc-events topics list
-# Then check each active topic, or query all pending:
-sqlite3 ~/.config/opencode/event-crusher/events.db "SELECT id, topic, substr(body, 1, 100) FROM events WHERE status = 'pending' LIMIT 10"
+# Query all pending events with metadata enrichment:
+sqlite3 ~/.config/opencode/event-crusher/events.db "SELECT id, topic, substr(body, 1, 100), status FROM events WHERE status = 'pending' LIMIT 20"
 ```
 
-### Step 3: If a specific event exists but wasn't found
-Events may be on different topics (e.g., `review-and-deploy`, `bugfix`, `feature`). If the user mentions a specific event ID:
+### Step 3: Enrich events with PR/Jira context (NEW)
+For each pending event, check for linked PR and Jira status:
+
 ```bash
-oc-events status <event-id> --set pending  # Reset if stuck in 'processing'
-oc-events pull <topic> --agent @opencode   # Pull from the correct topic
+# Extract Jira key (DEV-XXXX) from event body
+EVENT_BODY=$(sqlite3 ~/.config/opencode/event-crusher/events.db "SELECT body FROM events WHERE id = '$EVENT_ID'")
+echo "$EVENT_BODY" | grep -oE 'DEV-[0-9]+'
+
+# Check Jira status via Atlassian MCP
+atlantide jira get-issue <JIRA_KEY> --fields status
+
+# Check PR comments via Bitbucket MCP
+bb pullrequest comment list --pullrequest <PR_NUMBER>
 ```
+
+### Step 4: Process with routing (NEW)
+Based on PR/Jira state, route events to appropriate actions:
+
+| State | Route | Action |
+|-------|-------|--------|
+| PR has unresolved comments | `needs-review` | Address comments before proceeding |
+| PR merged, LLM PROMPT exists | `needs-testing` | Execute testing instructions |
+| PR approved, no blockers | `ready-to-merge` | Merge PR |
+| Jira in "QA" status | `qa-testing` | Run verification tests |
+| Jira in "Prod. Deploy" | `production-deploy` | Create/deploy tag |
 
 ### Processing Events
 If an event is returned:
-1. Read the event body and system prompt carefully
-2. Execute the requested action
-3. Reply with: `oc-events reply <event-id> --status completed --body "your response"`
+1. Read the event body carefully
+2. Extract PR number and/or Jira key from body
+3. Check PR comments and Jira status
+4. Determine appropriate route
+5. Execute the requested action
+6. Reply with: `oc-events reply <event-id> --status completed --body "your response"`
 
 If no events are found across all topics, inform the user there are no pending events.
 
@@ -43,64 +94,147 @@ If no events are found across all topics, inform the user there are no pending e
 
 The following sub-commands fetch data from external sources and create events automatically.
 
-### .pullprs - Pull PRs for Review
+### .check-prs - Check PRs with Full Context (ENHANCED)
 
-When the user says `.pullprs`, `pull prs`, or `check PRs`:
+When the user says `.check-prs`, `.pullprs`, `check prs`, or `pull prs`:
 
-1. Read the prompt template from:
-   - User override: `~/.config/opencode/event-crusher/prompts/pull-prs.md`
-   - Default: `~/projects/opencode-event-crusher/prompts/pull-prs.md`
+1. **Fetch open PRs from Bitbucket**
+   ```bash
+   bb pullrequest list --state open --output json
+   ```
 
-2. Follow the instructions in the prompt to:
-   - Load the bitbucket skill
-   - Fetch open PRs needing review
-   - Create events for each PR
-   - Report summary
+2. **For each PR, enrich with context**
+   ```bash
+   # Get PR details
+   bb pullrequest get <PR_NUMBER>
+   
+   # Get comment count and unresolved reviewers
+   bb pullrequest comment list --pullrequest <PR_NUMBER>
+   
+   # Check CodeRabbit review status (look for @coderabbitai comments)
+   
+   # Detect LLM PROMPT in PR description or comments
+   ```
 
-### .pulljira - Pull Jira/Linear Issues
+3. **Create events based on PR state**
+   - **Needs Review**: Open PRs with no recent activity (>24h)
+   - **Has Comments**: PRs with unresolved reviewer comments
+   - **Ready to Merge**: PRs that are approved and ready
+   - **Needs Testing**: Merged PRs with LLM PROMPT instructions
 
-When the user says `.pulljira`, `pull jiras`, `pull issues`, or `check issues`:
+4. **Example event body with metadata**
+   ```
+   PR Review: {title}
+   PR: #{number} ({state})
+   Link: {pr_link}
+   
+   State: {open|merged|approved|needs_changes}
+   Comments: {count} unresolved
+   LLM PROMPT: {detected|none}
+   Reviewers: {reviewer_list}
+   
+   Recommended Route: {needs-review|ready-to-merge|needs-testing}
+   ```
 
-1. Read the prompt template from:
-   - User override: `~/.config/opencode/event-crusher/prompts/pull-jiras.md`
-   - Default: `~/projects/opencode-event-crusher/prompts/pull-jiras.md`
+5. **Report summary**
+   ```
+   **PR Summary:**
+   - 3 open PRs needing review
+   - 1 PR ready to merge
+   - 2 PRs have unresolved comments
+   ```
 
-2. Follow the instructions in the prompt to:
-   - Load the linear skill (or atlassian skill for Jira)
-   - Fetch assigned issues needing attention
-   - Create events for each issue
-   - Report summary
+### .check-jira - Check Jira Issues (NEW)
 
-### .pullbugs - Pull Bugsnag Errors
+When the user says `.check-jira`, `.checkjira`, `check jira`, `.pulljira`, `pull jiras`, `check issues`, or `pull issues`:
 
-When the user says `.pullbugs`, `pull bugs`, or `check errors`:
+1. **Fetch user's assigned issues from Jira**
+   ```bash
+   # Using Atlassian MCP
+   atlan jira search --jql "assignee = currentUser() AND status NOT IN (Done, Canceled)"
+   
+   # Or using bb CLI
+   bb pullrequest list --state open --output json | grep -i "DEV-[0-9]"
+   ```
 
-1. Read the prompt template from:
-   - User override: `~/.config/opencode/event-crusher/prompts/pull-bugs.md`
-   - Default: `~/projects/opencode-event-crusher/prompts/pull-bugs.md`
+2. **For each issue, check linked PR and state**
+   ```bash
+   # Get issue details
+   bb pullrequest get <PR_NUMBER>
+   
+   # Check PR comments
+   bb pullrequest comment list --pullrequest <PR_NUMBER>
+   
+   # Check for LLM PROMPT
+   ```
 
-2. Follow the instructions in the prompt to:
-   - Load the bugsnag skill
-   - Fetch recent errors needing investigation
-   - Create events for high-impact issues
-   - Report summary
+3. **Create events based on Jira state**
+   - **PR Stage**: Issues in "PR" status - check PR comments
+   - **QA Stage**: Issues in "QA" status - run tests
+   - **Prod Deploy**: Issues in "Prod. Deploy" status - deploy to production
+   - **Blocked**: Issues with failed tests or rejected reviews
 
-### .pullall - Pull All Sources
+4. **Example event body**
+   ```
+   Jira Action Required: {summary}
+   Jira: {key} ({status})
+   Link: {jira_link}
+   
+   PR: #{number} ({state})
+   Comments: {count} unresolved
+   LLM PROMPT: {detected|none}
+   
+   Recommended Route: {needs-review|qa-testing|production-deploy}
+   ```
 
-When the user says `.pullall` or `pull all`:
+5. **Report summary**
+   ```
+   **Jira Summary:**
+   - 2 issues in PR stage
+   - 1 issue in QA stage
+   - 1 issue ready for Prod Deploy
+   ```
 
-Execute all three sub-commands in sequence:
-1. `.pullprs`
-2. `.pulljira`
-3. `.pullbugs`
+### .checkbugs - Check Bugsnag Errors
 
-Report combined summary at the end.
+When the user says `.checkbugs`, `.check-bugs`, `.pullbugs`, `check bugs`, `check errors`, or `pull bugs`:
+
+1. **Fetch recent errors from Bugsnag**
+   - Use bugsnag skill to fetch errors
+   - Prioritize by frequency and severity
+
+2. **For each error, check if linked Jira exists**
+   ```bash
+   # Extract error code from Bugsnag
+   ERROR_CODE=$(echo "$error_title" | grep -oE 'DEV-[0-9]+')
+   
+   # Check Jira status
+   bb pullrequest list --state open | grep "$ERROR_CODE"
+   ```
+
+3. **Create events for high-impact errors**
+   - New errors without investigation
+   - High-frequency recurring errors
+   - Errors linked to open Jira tickets
+
+4. **Report summary**
+
+### .checkall - Check All Sources
+
+When the user says `.checkall`, `.check-all`, `.pullall`, or `check all`:
+
+Execute all sub-commands in sequence:
+1. `.check-prs`
+2. `.check-jira`
+3. `.checkbugs`
+
+Report combined summary with unified routing recommendations.
 
 ## Core Commands
 
 ### Publish
 - `oc-events push <topic> --body "..."`
-- Optional: `--meta '{"key":"value"}' --source <source> --correlation-id <id>`
+- Optional: `--meta '{"pr":123,"jira":"DEV-1828","route":"needs-testing"}' --source <source> --correlation-id <id>`
 
 ### Consume
 - `oc-events pull <topic> --agent "@opencode"`
@@ -126,6 +260,38 @@ Report combined summary at the end.
 
 ### Cleanup
 - `oc-events cleanup --completed-days 30 --pending-days 7`
+
+## Workflow Integration
+
+### Resume-Workflow Routing
+
+When processing events, use resume-workflow patterns:
+
+| Scenario | Check | Action |
+|----------|-------|--------|
+| PR has comments | `bb pullrequest comment list --pullrequest <PR>` | Route: needs-review |
+| PR approved | `bb pullrequest get <PR>` | Route: ready-to-merge |
+| LLM PROMPT exists | Check PR description/comments | Route: needs-testing |
+| Jira in QA | `atlan jira get-issue <KEY>` | Route: qa-testing |
+| Jira in Prod Deploy | Check deployment status | Route: production-deploy |
+
+### Example Event Processing Flow
+
+```
+Event: PR Review: Fix implode error in Bandcamp
+PR: #1906 (OPEN)
+Comments: 0 unresolved
+
+1. Check PR comments: bb pullrequest comment list --pullrequest 1906
+   → Result: No unresolved comments
+
+2. Check PR state: bb pullrequest get 1906
+   → Result: OPEN, needs_reviewers
+
+3. Determine route: Ready to merge → Route D
+
+4. Execute: Propose merge to developer
+```
 
 ## Configuration
 
