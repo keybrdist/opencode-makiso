@@ -2,7 +2,6 @@ import type { Plugin } from "@opencode-ai/plugin";
 import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import notifier from "node-notifier";
 import { getDefaultConfig } from "./config.js";
 
 const LOG_ENABLED = process.env.OC_EVENTS_DEBUG === "1";
@@ -17,108 +16,85 @@ const log = (message: string, data?: unknown) => {
   fs.appendFileSync(LOG_PATH, logLine);
 };
 
-const formatEvent = (event: Record<string, unknown>): string => {
-
-  const metadata = event.metadata ? JSON.stringify(event.metadata, null, 2) : "{}";
-  return [
-    `[INCOMING EVENT: ${event.topic ?? "unknown"}]`,
-    event.system_prompt ? String(event.system_prompt) : "",
-    "---",
-    String(event.body ?? ""),
-    "---",
-    `Metadata: ${metadata}`,
-    `Correlation ID: ${event.correlation_id ?? "none"}`,
-    `Event ID: ${event.id ?? "unknown"}`,
-    "When complete, run: oc-events reply <id> --status <completed|failed> --body \"...\""
-  ]
-    .filter((line) => line.length > 0)
-    .join("\n");
-};
-
-export const EventCrusherPlugin: Plugin = async ({ client, directory }) => {
-  let lastPoll = 0;
-  let polling = false;
+export const EventCrusherPlugin: Plugin = async ({ client }) => {
+  const config = getDefaultConfig();
+  const triggerPath = path.join(config.dataDir, ".trigger");
+  let watcher: fs.FSWatcher | null = null;
+  let initialized = false;
 
   log("EventCrusherPlugin initialized");
-  log(`Directory: ${directory}`);
+
+  // Ensure trigger file exists
+  try {
+    fs.mkdirSync(path.dirname(triggerPath), { recursive: true });
+    if (!fs.existsSync(triggerPath)) {
+      fs.writeFileSync(triggerPath, "0");
+    }
+  } catch (error) {
+    log("Error creating trigger file:", error);
+  }
+
+  const checkForEvents = async () => {
+    try {
+      // Count pending events without claiming
+      const cmd = `oc-events search "a" 2>/dev/null || echo "[]"`;
+      const output = execSync(cmd, { encoding: "utf8", timeout: 5000, shell: "/bin/bash" }).trim();
+      
+      let count = 0;
+      try {
+        const events = JSON.parse(output);
+        count = events.filter((e: { status: string }) => e.status === "pending").length;
+      } catch {
+        // Ignore parse errors
+      }
+
+      if (count > 0) {
+        log(`Found ${count} pending events`);
+        
+        // Show toast notification
+        await client.tui.showToast({
+          body: {
+            title: "Event Crusher",
+            message: `${count} pending event${count > 1 ? "s" : ""} - use /event-crusher`,
+            variant: "info",
+            duration: 4000
+          }
+        });
+        log("Toast shown");
+      }
+    } catch (error) {
+      log("Error checking events:", error);
+    }
+  };
+
+  // Set up file watcher
+  const startWatcher = () => {
+    if (watcher) return;
+
+    try {
+      watcher = fs.watch(triggerPath, { persistent: false }, (eventType) => {
+        if (eventType === "change") {
+          log("Trigger file changed");
+          checkForEvents();
+        }
+      });
+
+      watcher.on("error", (error) => {
+        log("Watcher error:", error);
+      });
+
+      log(`File watcher started: ${triggerPath}`);
+    } catch (error) {
+      log("Failed to start file watcher:", error);
+    }
+  };
 
   return {
     event: async ({ event }) => {
-      log(`Event received: ${event.type}`);
-
-      // Poll on session.status instead of session.idle for more frequent checks
-      if (event.type !== "session.status") return;
-
-      const config = getDefaultConfig();
-      const now = Date.now();
-      const timeSinceLastPoll = now - lastPoll;
-
-      log(`Session idle. Time since last poll: ${timeSinceLastPoll}ms, interval: ${config.pollIntervalMs}ms`);
-
-      if (timeSinceLastPoll < config.pollIntervalMs) {
-        log("Skipping poll - too soon");
-        return;
-      }
-
-      if (polling) {
-        log("Skipping poll - already polling");
-        return;
-      }
-
-      lastPoll = now;
-      polling = true;
-
-      try {
-        const cmd = `oc-events pull ${config.pollTopic} --agent ${config.pollAgent}`;
-        log(`Executing: ${cmd}`);
-
-        const output = execSync(cmd, { encoding: "utf8", timeout: 5000 }).trim();
-
-        log(`Command output: ${output}`);
-
-        if (!output) {
-          log("No output from pull command");
-          return;
-        }
-
-        const parsed = JSON.parse(output);
-        log("Parsed event:", parsed);
-
-        const content = formatEvent(parsed);
-        log(`Formatted content (${content.length} chars)`);
-
-        const sessionID = event.properties.sessionID;
-        log(`Injecting into session: ${sessionID}`);
-        log(`Event content to inject:`, content);
-
-        // Write event to a visible file for reference
-        const notificationPath = path.join(config.dataDir, "last-event.txt");
-        fs.writeFileSync(notificationPath, `[${new Date().toISOString()}]\n\n${content}\n`);
-        log(`Event written to: ${notificationPath}`);
-
-        // Show system notification
-        notifier.notify({
-          title: `OpenCode Event: ${parsed.topic}`,
-          message: `${String(parsed.body).substring(0, 100)}${String(parsed.body).length > 100 ? "..." : ""}`,
-          sound: true,
-          wait: false
-        });
-        log("System notification sent");
-
-        // Also try injecting as prompt (might work in future versions)
-        await client.session.prompt({
-          path: { id: sessionID },
-          body: {
-            parts: [{ type: "text", text: content }]
-          }
-        });
-
-        log("Event processing complete");
-      } catch (error) {
-        log("Error during poll:", error);
-      } finally {
-        polling = false;
-        log("Polling complete");
+      // Start watcher on first session event
+      if (!initialized && (event.type === "session.status" || event.type === "session.idle")) {
+        initialized = true;
+        startWatcher();
       }
     }
   };

@@ -1,6 +1,21 @@
 import { ulid } from "ulid";
+import fs from "node:fs";
+import path from "node:path";
 import type { DatabaseClient } from "./client.js";
 import type { EventRecord, EventStatus } from "./types.js";
+
+// Touch trigger file to notify watchers
+const touchTrigger = () => {
+  const triggerPath = path.join(
+    process.env.HOME ?? ".",
+    ".config", "opencode", "event-crusher", ".trigger"
+  );
+  try {
+    fs.writeFileSync(triggerPath, Date.now().toString());
+  } catch {
+    // Ignore errors - watcher is optional
+  }
+};
 
 export type NewEventInput = {
   topic: string;
@@ -39,6 +54,10 @@ export const insertEvent = (db: DatabaseClient, input: NewEventInput): EventReco
   );
 
   const row = db.prepare("SELECT * FROM events WHERE id = ?").get(id) as EventRecord;
+  
+  // Notify watchers
+  touchTrigger();
+  
   return row;
 };
 
