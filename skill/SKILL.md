@@ -1,5 +1,5 @@
 ---
-name: events
+name: event-crusher
 description: Publish, pull, search, and reply to OpenCode events
 argument-hint: e.g. "check events", ".pullprs", ".pulljira", ".pullbugs"
 ---
