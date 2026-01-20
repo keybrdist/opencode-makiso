@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Debug logs
+*.log
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# SQLite database (local data)
+*.db
+
+# Package manager locks (optional - uncomment if you want to exclude)
+# package-lock.json
+# bun.lockb

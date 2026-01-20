@@ -1,0 +1,50 @@
+{
+  "name": "opencode-event-crusher",
+  "version": "0.1.0",
+  "description": "Local-first pub/sub event system for OpenCode agents",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "oc-events": "dist/cli.js",
+    "oc-events-webhook": "dist/server.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "npx tsc",
+    "watch": "npx tsc --watch",
+    "clean": "rm -rf dist",
+    "lint": "echo \"no lint configured\"",
+    "prepack": "npm run clean && npm run build"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "events",
+    "pubsub",
+    "sqlite"
+  ],
+  "author": "keybrdist",
+  "license": "MIT",
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.1.23",
+    "better-sqlite3": "^11.8.1",
+    "commander": "^12.1.0",
+    "node-notifier": "^10.0.1",
+    "ulid": "^2.3.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.0.0",
+    "@types/node-notifier": "^8.0.5",
+    "typescript": "^5.7.0"
+  }
+}
