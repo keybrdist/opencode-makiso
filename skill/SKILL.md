@@ -10,17 +10,34 @@ A local-first pub/sub system for coordinating LLM agents with events stored in S
 
 ## Event Checking
 
-When the user asks you to check for events (e.g., "check events", "any pending tasks?"), run:
+When the user asks you to check for events (e.g., "check events", "any pending tasks?"):
+
+### Step 1: Check inbox first
 ```bash
 oc-events pull inbox --agent @opencode
 ```
 
+### Step 2: If inbox is empty, check all topics for pending events
+```bash
+oc-events topics list
+# Then check each active topic, or query all pending:
+sqlite3 ~/.config/opencode/event-crusher/events.db "SELECT id, topic, substr(body, 1, 100) FROM events WHERE status = 'pending' LIMIT 10"
+```
+
+### Step 3: If a specific event exists but wasn't found
+Events may be on different topics (e.g., `review-and-deploy`, `bugfix`, `feature`). If the user mentions a specific event ID:
+```bash
+oc-events status <event-id> --set pending  # Reset if stuck in 'processing'
+oc-events pull <topic> --agent @opencode   # Pull from the correct topic
+```
+
+### Processing Events
 If an event is returned:
 1. Read the event body and system prompt carefully
 2. Execute the requested action
 3. Reply with: `oc-events reply <event-id> --status completed --body "your response"`
 
-If no event is returned (empty output), inform the user there are no pending events.
+If no events are found across all topics, inform the user there are no pending events.
 
 ## Sub-Commands (Event Sources)
 
