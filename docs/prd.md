@@ -40,7 +40,7 @@ Each event has:
 - timestamps (`created_at`, `processed_at`)
 
 ### 2) Storage
-- SQLite database stored at `~/.config/opencode/pubsub/events.db`
+- SQLite database stored at `~/.config/opencode/event-crusher/events.db`
 - FTS5 virtual table for full-text search over event body
 - Secondary tables for @mentions and tool call indexing
 
