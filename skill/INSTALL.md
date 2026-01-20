@@ -1,7 +1,7 @@
 # Skill Install
 
 1. Symlink into OpenCode skills:
-   `ln -s ~/projects/opencode-event-crusher/skill ~/.config/opencode/skill/events`
+   `ln -s ~/projects/opencode-event-crusher/skill ~/.config/opencode/skill/event-crusher`
 
 2. Restart OpenCode.
 
