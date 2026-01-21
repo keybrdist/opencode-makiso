@@ -8,7 +8,7 @@ import type { EventRecord, EventStatus } from "./types.js";
 const touchTrigger = () => {
   const triggerPath = path.join(
     process.env.HOME ?? ".",
-    ".config", "opencode", "event-crusher", ".trigger"
+    ".config", "opencode", "makiso", ".trigger"
   );
   try {
     fs.writeFileSync(triggerPath, Date.now().toString());
@@ -54,10 +54,10 @@ export const insertEvent = (db: DatabaseClient, input: NewEventInput): EventReco
   );
 
   const row = db.prepare("SELECT * FROM events WHERE id = ?").get(id) as EventRecord;
-  
+
   // Notify watchers
   touchTrigger();
-  
+
   return row;
 };
 

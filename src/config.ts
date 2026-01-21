@@ -44,7 +44,7 @@ const parseRouteMap = (value?: string): Record<string, string> => {
 
 export const getDefaultConfig = (): AppConfig => {
   const home = process.env.HOME ?? ".";
-  const dataDir = path.join(home, ".config", "opencode", "event-crusher");
+  const dataDir = path.join(home, ".config", "opencode", "makiso");
   return {
     dataDir,
     dbPath: path.join(dataDir, "events.db"),

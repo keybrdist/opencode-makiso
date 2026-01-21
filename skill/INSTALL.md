@@ -1,7 +1,7 @@
 # Skill Install
 
 1. Symlink into OpenCode skills:
-   `ln -s ~/projects/opencode-event-crusher/skill ~/.config/opencode/skill/event-crusher`
+   `ln -s ~/projects/opencode-makiso/skill ~/.config/opencode/skill/makiso`
 
 2. Restart OpenCode.
 

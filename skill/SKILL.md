@@ -1,13 +1,15 @@
 ---
-name: event-crusher
+name: makiso
 description: Publish, pull, search, and reply to OpenCode events with PR/Jira integration
 argument-hint: e.g. "check events", ".check-prs", ".check-jira", ".checkbugs"
 ---
 
-# OpenCode Event Crusher
+# OpenCode Makiso
 
 A local-first pub/sub system for coordinating LLM agents with events stored in SQLite.
 Enhanced with PR comment awareness, Jira status tracking, and workflow routing.
+
+**Name origin:** "Make it so"
 
 ## Automatic Skill Trigger
 
@@ -28,7 +30,7 @@ Enhanced with PR comment awareness, Jira status tracking, and workflow routing.
 
 **Do NOT:**
 - Use laravel-boost tools for log checking when user says "check events"
-- Guess what "events" means - load event-crusher skill first
+- Guess what "events" means - load makiso skill first
 - Ask user to clarify - just load the skill
 
 **Do:**
@@ -48,17 +50,18 @@ oc-events pull inbox --agent @opencode
 
 ### Step 2: If inbox empty, check all topics for pending events
 ```bash
-oc-events topics list
-# Query all pending events with metadata enrichment:
-sqlite3 ~/.config/opencode/event-crusher/events.db "SELECT id, topic, substr(body, 1, 100), status FROM events WHERE status = 'pending' LIMIT 20"
+# Query all pending events from database:
+sqlite3 ~/.config/opencode/makiso/events.db "SELECT id, topic, substr(body, 1, 100), status FROM events WHERE status = 'pending' ORDER BY created_at DESC LIMIT 20"
 ```
+
+**IMPORTANT**: Always run Step 2 when inbox is empty. Do NOT tell the user "No events found" after only checking the inbox.
 
 ### Step 3: Enrich events with PR/Jira context (NEW)
 For each pending event, check for linked PR and Jira status:
 
 ```bash
 # Extract Jira key (DEV-XXXX) from event body
-EVENT_BODY=$(sqlite3 ~/.config/opencode/event-crusher/events.db "SELECT body FROM events WHERE id = '$EVENT_ID'")
+EVENT_BODY=$(sqlite3 ~/.config/opencode/makiso/events.db "SELECT body FROM events WHERE id = '$EVENT_ID'")
 echo "$EVENT_BODY" | grep -oE 'DEV-[0-9]+'
 
 # Check Jira status via Atlassian MCP
@@ -88,7 +91,7 @@ If an event is returned:
 5. Execute the requested action
 6. Reply with: `oc-events reply <event-id> --status completed --body "your response"`
 
-If no events are found across all topics, inform the user there are no pending events.
+**Only after checking BOTH inbox AND database**: If no events are found in inbox (Step 1) AND no pending events in database (Step 2), then inform the user there are no pending events.
 
 ## Sub-Commands (Event Sources)
 
@@ -107,12 +110,12 @@ When the user says `.check-prs`, `.pullprs`, `check prs`, or `pull prs`:
    ```bash
    # Get PR details
    bb pullrequest get <PR_NUMBER>
-   
+
    # Get comment count and unresolved reviewers
    bb pullrequest comment list --pullrequest <PR_NUMBER>
-   
+
    # Check CodeRabbit review status (look for @coderabbitai comments)
-   
+
    # Detect LLM PROMPT in PR description or comments
    ```
 
@@ -127,12 +130,12 @@ When the user says `.check-prs`, `.pullprs`, `check prs`, or `pull prs`:
    PR Review: {title}
    PR: #{number} ({state})
    Link: {pr_link}
-   
+
    State: {open|merged|approved|needs_changes}
    Comments: {count} unresolved
    LLM PROMPT: {detected|none}
    Reviewers: {reviewer_list}
-   
+
    Recommended Route: {needs-review|ready-to-merge|needs-testing}
    ```
 
@@ -152,7 +155,7 @@ When the user says `.check-jira`, `.checkjira`, `check jira`, `.pulljira`, `pull
    ```bash
    # Using Atlassian MCP
    atlan jira search --jql "assignee = currentUser() AND status NOT IN (Done, Canceled)"
-   
+
    # Or using bb CLI
    bb pullrequest list --state open --output json | grep -i "DEV-[0-9]"
    ```
@@ -161,10 +164,10 @@ When the user says `.check-jira`, `.checkjira`, `check jira`, `.pulljira`, `pull
    ```bash
    # Get issue details
    bb pullrequest get <PR_NUMBER>
-   
+
    # Check PR comments
    bb pullrequest comment list --pullrequest <PR_NUMBER>
-   
+
    # Check for LLM PROMPT
    ```
 
@@ -179,11 +182,11 @@ When the user says `.check-jira`, `.checkjira`, `check jira`, `.pulljira`, `pull
    Jira Action Required: {summary}
    Jira: {key} ({status})
    Link: {jira_link}
-   
+
    PR: #{number} ({state})
    Comments: {count} unresolved
    LLM PROMPT: {detected|none}
-   
+
    Recommended Route: {needs-review|qa-testing|production-deploy}
    ```
 
@@ -207,7 +210,7 @@ When the user says `.checkbugs`, `.check-bugs`, `.pullbugs`, `check bugs`, `chec
    ```bash
    # Extract error code from Bugsnag
    ERROR_CODE=$(echo "$error_title" | grep -oE 'DEV-[0-9]+')
-   
+
    # Check Jira status
    bb pullrequest list --state open | grep "$ERROR_CODE"
    ```
@@ -218,6 +221,52 @@ When the user says `.checkbugs`, `.check-bugs`, `.pullbugs`, `check bugs`, `chec
    - Errors linked to open Jira tickets
 
 4. **Report summary**
+
+#### Time Window Strategy
+
+Start narrow, expand if needed:
+
+1. **First pass:** Last 24 hours (--since "24 hours ago")
+   - Quick wins, recent regressions
+
+2. **Second pass:** Last 7 days (--since "7 days ago")
+   - Persistent issues, higher event counts
+
+3. **Volume threshold:**
+   - 24h window: 10+ events = investigate
+   - 7d window: 50+ events = critical
+   - 30d window: 500+ events = systemic issue
+
+#### Consolidation Analysis for High-Volume Errors
+
+When dealing with 10+ Bugsnag errors, use consolidation strategy:
+
+1. **Group by file/responsibility:**
+   - Same file = same PR
+   - Same DSP integration = same PR
+   - Same subsystem (S3, Redis, validation) = same PR
+
+2. **Priority ranking:**
+   - Event volume (1000+ = critical)
+   - Severity (error > warning)
+   - Impact (user-facing > background jobs)
+
+3. **Cross-check recent commits:**
+   ```bash
+   # Check if fix already exists locally
+   git log --since="2 weeks ago" --grep="DEV-XXXX"
+   git branch -a | grep -iE "(fix|hotfix|bugfix)"
+   ```
+
+4. **Create consolidated PR events:**
+   - Topic: `pr-consolidation-{theme}` (e.g., pr-consolidation-critical-errors)
+   - Body: List all related DEV-XXX, files, priority
+   - Meta: `{"priority": 1-8, "issue_count": N, "event_count": N}`
+
+5. **Benefits:**
+   - Reduce 20+ PRs to 5-8 themed PRs
+   - 60-70% reduction in review time
+   - Related fixes reviewed together
 
 ### .checkall - Check All Sources
 
@@ -261,6 +310,47 @@ Report combined summary with unified routing recommendations.
 ### Cleanup
 - `oc-events cleanup --completed-days 30 --pending-days 7`
 
+## Investigation Patterns
+
+### Cross-Check Recent Commits for Bugsnag Errors
+
+Before creating new PR events, verify if fix already exists:
+
+```bash
+# 1. Extract error pattern from Bugsnag
+ERROR_KEY="DEV-1831"
+ERROR_PATTERN="invalid.*wav|mp3.*validation"
+
+# 2. Search recent commits
+git log --since="2 weeks ago" --all --oneline --grep="$ERROR_KEY"
+git log --since="2 weeks ago" --all -p | grep -iE "$ERROR_PATTERN"
+
+# 3. Check local unmerged branches
+git branch | grep -iE "(fix|hotfix|bugfix)"
+git log main..branch-name --oneline
+
+# 4. If fix found, route to deployment instead of new PR
+```
+
+**Common scenarios:**
+- Fix exists but never pushed → Route: push-and-pr
+- Fix on remote branch not merged → Route: needs-review
+- Fix merged to main not deployed → Route: production-deploy
+
+### Topic Naming Conventions
+
+For Bugsnag-driven workflows:
+
+| Pattern | Use Case | Example |
+|---------|----------|---------|
+| `bugsnag-investigation` | Individual error analysis | Single DEV-XXXX deep dive |
+| `investigation-{key}-cross-check` | Commit verification | investigation-dev-1831-cross-check |
+| `pr-consolidation-{theme}` | Grouped PR planning | pr-consolidation-critical-errors |
+| `{subsystem}-incident` | Multi-error incident | audio-processing-incident |
+| `pr-refinement-analysis` | Consolidation review | Overlap detection, priority adjustment |
+| `plugin-management` | Plugin improvements | Feature requests, refactoring |
+| `plugin-feature-request` | New slash commands | Workflow automation ideas |
+
 ## Workflow Integration
 
 ### Resume-Workflow Routing
@@ -295,10 +385,10 @@ Comments: 0 unresolved
 
 ## Configuration
 
-- Data directory: `~/.config/opencode/event-crusher/`
-- Prompts directory: `~/.config/opencode/event-crusher/prompts/`
-- Database: `~/.config/opencode/event-crusher/events.db`
-- Debug log: `~/.config/opencode/event-crusher/plugin.log`
+- Data directory: `~/.config/opencode/makiso/`
+- Prompts directory: `~/.config/opencode/makiso/prompts/`
+- Database: `~/.config/opencode/makiso/events.db`
+- Debug log: `~/.config/opencode/makiso/plugin.log`
 
 Environment variables:
 - `OC_AGENT_ID` - Agent identity (default: `@opencode`)

@@ -1,7 +1,7 @@
 {
-  "name": "opencode-event-crusher",
+  "name": "opencode-makiso",
   "version": "0.1.0",
-  "description": "Local-first pub/sub event system for OpenCode agents",
+  "description": "Local-first pub/sub event system for OpenCode agents (Make it so!)",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

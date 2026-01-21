@@ -3,9 +3,11 @@
 This directory contains the OpenCode skill definition for Event Crusher.
 
 ## Install
+
 1. Symlink:
-   `ln -s ~/projects/opencode-event-crusher/skill ~/.config/opencode/skill/event-crusher`
+   `ln -s ~/projects/opencode-makiso/skill ~/.config/opencode/skill/makiso`
 2. Restart OpenCode.
 
 ## Usage
-Use the `event-crusher` skill to invoke `oc-events` commands.
+
+Use the `makiso` skill to invoke `oc-events` commands.

@@ -1,4 +1,4 @@
-# OpenCode Event Crusher
+# makiso - event queuing and delayed-execution
 
 Local-first pub/sub event system for LLM agent coordination in OpenCode.
 
@@ -15,7 +15,7 @@ Local-first pub/sub event system for LLM agent coordination in OpenCode.
 ### 1. Build the project
 
 ```bash
-cd ~/projects/opencode-event-crusher
+cd ~/projects/opencode-makiso
 npm install
 npm run build
 npm link  # Makes oc-events available globally
@@ -24,7 +24,7 @@ npm link  # Makes oc-events available globally
 ### 2. Install the skill (for AI event execution)
 
 ```bash
-ln -s ~/projects/opencode-event-crusher/skill ~/.config/opencode/skill/event-crusher
+ln -s ~/projects/opencode-makiso/skill ~/.config/opencode/skill/makiso
 ```
 
 The skill allows the AI to check for and execute events. **By default, this is manual** - you need to ask the AI to check for events (e.g., "check for events", "any pending tasks?"). The AI will then pull and execute any pending events.
@@ -36,7 +36,7 @@ Add the plugin to `~/.config/opencode/opencode.json`:
 ```json
 {
   "plugin": [
-    "~/projects/opencode-event-crusher"
+    "~/projects/opencode-makiso"
   ]
 }
 ```
@@ -83,7 +83,7 @@ Runs all three sub-commands in sequence.
 
 ### Customizing Sub-Commands
 
-Default prompt templates are in `~/projects/opencode-event-crusher/prompts/`:
+Default prompt templates are in `~/projects/opencode-makiso/prompts/`:
 
 - `pull-prs.md`
 - `pull-jiras.md`
@@ -92,7 +92,7 @@ Default prompt templates are in `~/projects/opencode-event-crusher/prompts/`:
 To customize, create override files in:
 
 ```
-~/.config/opencode/event-crusher/prompts/
+~/.config/opencode/makiso/prompts/
 ```
 
 User overrides take precedence over defaults.
@@ -101,10 +101,10 @@ User overrides take precedence over defaults.
 
 ### Data Directory
 
-All event-crusher data is stored in:
+All makiso data is stored in:
 
 ```
-~/.config/opencode/event-crusher/
+~/.config/opencode/makiso/
 ├── events.db          # SQLite database
 ├── plugin.log         # Debug logs (when OC_EVENTS_DEBUG=1)
 ├── last-event.txt     # Last processed event
@@ -158,7 +158,7 @@ If an event exists, the AI will:
 To make the AI check automatically at every turn, edit the skill file:
 
 ```
-~/.config/opencode/skill/event-crusher/SKILL.md
+~/.config/opencode/skill/makiso/SKILL.md
 ```
 
 Change the "Event Checking" section to include:
@@ -257,14 +257,14 @@ curl -X POST http://localhost:8787/alerts \
 **Option 1: Remove the skill**
 
 ```bash
-rm ~/.config/opencode/skill/event-crusher
+rm ~/.config/opencode/skill/makiso
 ```
 
 **Option 2: Disable the plugin**
 Remove from `~/.config/opencode/opencode.json`:
 
 ```json
-"~/projects/opencode-event-crusher"
+"~/projects/opencode-makiso"
 ```
 
 ## Agent ID Conflicts
@@ -278,7 +278,7 @@ Events can only be claimed once. Use different agent IDs for different consumers
 ## Repo Layout
 
 ```
-opencode-event-crusher/
+opencode-makiso/
 ├── src/               # Core library, CLI, plugin, server
 ├── skill/             # OpenCode skill files
 ├── prompts/           # Default sub-command prompt templates

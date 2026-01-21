@@ -1,7 +1,7 @@
-# PRD: OpenCode Event Crusher
+# PRD: makiso - event queuing and delayed-execution
 
 ## Executive Summary
-OpenCode Event Crusher is a local-first pub/sub event system that enables LLM agents to coordinate work through structured events. It is designed for OpenCode integration via a CLI and plugin, supports webhook ingestion, and stores all events in a searchable SQLite database with FTS5 indexing.
+makiso - event queuing and delayed-execution is a local-first pub/sub event system that enables LLM agents to coordinate work through structured events. It is designed for OpenCode integration via a CLI and plugin, supports webhook ingestion, and stores all events in a searchable SQLite database with FTS5 indexing.
 
 ## Goals
 - Enable agent-to-agent task handoff with reliable event history
@@ -40,7 +40,7 @@ Each event has:
 - timestamps (`created_at`, `processed_at`)
 
 ### 2) Storage
-- SQLite database stored at `~/.config/opencode/event-crusher/events.db`
+- SQLite database stored at `~/.config/opencode/makiso/events.db`
 - FTS5 virtual table for full-text search over event body
 - Secondary tables for @mentions and tool call indexing
 
