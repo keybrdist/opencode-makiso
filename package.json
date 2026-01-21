@@ -1,19 +1,10 @@
 {
   "name": "opencode-makiso",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local-first pub/sub event system for OpenCode agents (Make it so!)",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
   "bin": {
-    "oc-events": "dist/cli.js",
-    "oc-events-webhook": "dist/server.js"
-  },
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
+    "oc-events": "dist/cli.js"
   },
   "engines": {
     "node": ">=18"
@@ -27,26 +18,25 @@
   },
   "keywords": [
     "opencode",
-    "plugin",
     "events",
     "pubsub",
-    "sqlite"
+    "sqlite",
+    "cli"
   ],
   "author": "keybrdist",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/keybrdist/opencode-makiso.git"
+  },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.1.23",
     "better-sqlite3": "^11.8.1",
     "commander": "^12.1.0",
-    "node-notifier": "^10.0.1",
-    "ulid": "^2.3.0",
-    "ws": "^8.19.0"
+    "ulid": "^2.3.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.0.0",
-    "@types/node-notifier": "^8.0.5",
-    "@types/ws": "^8.18.1",
     "typescript": "^5.7.0"
   }
 }

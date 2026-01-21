@@ -11,6 +11,117 @@ Enhanced with PR comment awareness, Jira status tracking, and workflow routing.
 
 **Name origin:** "Make it so"
 
+## First-Time Setup (Auto-Bootstrap)
+
+When you see `oc-events: command not found`, bootstrap using inline SQL. The skill works with just `sqlite3` (pre-installed on macOS/Linux).
+
+### Step 1: Create data directory
+```bash
+mkdir -p ~/.config/opencode/makiso
+```
+
+### Step 2: Initialize database
+```bash
+sqlite3 ~/.config/opencode/makiso/events.db "
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS metadata (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS events (
+  id TEXT PRIMARY KEY,
+  topic TEXT NOT NULL,
+  body TEXT NOT NULL,
+  metadata TEXT,
+  correlation_id TEXT,
+  parent_id TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  source TEXT NOT NULL DEFAULT 'agent',
+  created_at INTEGER NOT NULL,
+  processed_at INTEGER,
+  claimed_by TEXT,
+  claimed_at INTEGER,
+  expires_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_topic_status ON events(topic, status);
+CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at);
+CREATE INDEX IF NOT EXISTS idx_events_correlation_id ON events(correlation_id);
+CREATE INDEX IF NOT EXISTS idx_events_claimed_by ON events(claimed_by);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
+  body,
+  content='events',
+  content_rowid='rowid'
+);
+
+CREATE TRIGGER IF NOT EXISTS events_ai AFTER INSERT ON events BEGIN
+  INSERT INTO events_fts(rowid, body) VALUES (new.rowid, new.body);
+END;
+
+CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON events BEGIN
+  INSERT INTO events_fts(events_fts, rowid, body) VALUES ('delete', old.rowid, old.body);
+END;
+
+CREATE TRIGGER IF NOT EXISTS events_au AFTER UPDATE ON events BEGIN
+  INSERT INTO events_fts(events_fts, rowid, body) VALUES ('delete', old.rowid, old.body);
+  INSERT INTO events_fts(rowid, body) VALUES (new.rowid, new.body);
+END;
+
+CREATE TABLE IF NOT EXISTS topics (
+  name TEXT PRIMARY KEY,
+  system_prompt TEXT,
+  description TEXT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS mentions (
+  event_id TEXT NOT NULL,
+  mention TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mentions_mention ON mentions(mention);
+
+CREATE TABLE IF NOT EXISTS tool_calls (
+  event_id TEXT NOT NULL,
+  tool_name TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tool_calls_tool ON tool_calls(tool_name);
+"
+```
+
+### Verify Setup
+```bash
+sqlite3 ~/.config/opencode/makiso/events.db "SELECT name FROM sqlite_master WHERE type='table'"
+```
+
+Expected output: `metadata`, `events`, `topics`, `mentions`, `tool_calls`
+
+---
+
+## Command Detection
+
+Before running commands, check if CLI is available:
+
+```bash
+if command -v oc-events &>/dev/null; then
+  # Use CLI (preferred)
+  oc-events push inbox --body "test"
+else
+  # Use inline SQL (fallback)
+  sqlite3 ~/.config/opencode/makiso/events.db "INSERT INTO events..."
+fi
+```
+
+**Preference order:** Use CLI when available; fall back to inline SQL otherwise.
+
+---
+
 ## Automatic Skill Trigger
 
 **Load this skill IMMEDIATELY when user says:**
@@ -279,36 +390,103 @@ Execute all sub-commands in sequence:
 
 Report combined summary with unified routing recommendations.
 
-## Core Commands
+## Core Commands (CLI or Inline SQL)
 
-### Publish
-- `oc-events push <topic> --body "..."`
-- Optional: `--meta '{"pr":123,"jira":"DEV-1828","route":"needs-testing"}' --source <source> --correlation-id <id>`
+Use CLI when available; inline SQL as fallback. Database path: `~/.config/opencode/makiso/events.db`
 
-### Consume
-- `oc-events pull <topic> --agent "@opencode"`
+### Push Event
+```bash
+# CLI (preferred)
+oc-events push <topic> --body "message"
 
-### Reply
-- `oc-events reply <id> --status completed --body "..."`
-- Use `--status failed` for failures
+# Inline SQL (fallback)
+sqlite3 ~/.config/opencode/makiso/events.db \
+  "INSERT INTO events (id, topic, body, status, source, created_at)
+   VALUES ('$(date +%s)-$$', '<topic>', 'message', 'pending', 'skill', $(date +%s)000)"
+```
 
-### Watch (separate terminal)
-- `oc-events watch <topic> --agent <id> --interval <ms>`
+### Pull Event (claim next pending)
+```bash
+# CLI (preferred)
+oc-events pull <topic> --agent "@opencode"
 
-### Query
-- `oc-events query --mention @name`
-- `oc-events query --tool bash`
+# Inline SQL (fallback) - claim and return in one query
+sqlite3 -json ~/.config/opencode/makiso/events.db \
+  "UPDATE events SET status='processing', claimed_by='@opencode', claimed_at=$(date +%s)000
+   WHERE id = (SELECT id FROM events WHERE topic='<topic>' AND status='pending'
+   ORDER BY created_at LIMIT 1) RETURNING *"
+```
 
-### Search
-- `oc-events search "text query"`
+### Reply to Event
+```bash
+# CLI (preferred)
+oc-events reply <id> --status completed --body "result summary"
 
-### Topics
-- `oc-events topics list`
-- `oc-events topics create <topic> --prompt "..." --description "..."`
-- `oc-events topics set-prompt <topic> --prompt-file ./prompt.md`
+# Inline SQL (fallback)
+sqlite3 ~/.config/opencode/makiso/events.db \
+  "UPDATE events SET status='completed', processed_at=$(date +%s)000,
+   metadata=json_set(COALESCE(metadata,'{}'), '$.reply', 'result summary')
+   WHERE id='<id>'"
+```
 
-### Cleanup
-- `oc-events cleanup --completed-days 30 --pending-days 7`
+Use `--status failed` or `status='failed'` for failures.
+
+### Search Events
+```bash
+# CLI (preferred)
+oc-events search "text query"
+
+# Inline SQL (fallback)
+sqlite3 -json ~/.config/opencode/makiso/events.db \
+  "SELECT e.* FROM events e
+   JOIN events_fts fts ON e.rowid = fts.rowid
+   WHERE events_fts MATCH 'text query'
+   ORDER BY e.created_at DESC LIMIT 20"
+```
+
+### Query by Status/Topic
+```bash
+# CLI (preferred)
+oc-events query --topic inbox --status pending
+
+# Inline SQL (fallback)
+sqlite3 -json ~/.config/opencode/makiso/events.db \
+  "SELECT id, topic, substr(body, 1, 100) as body_preview, status, created_at
+   FROM events WHERE topic='inbox' AND status='pending'
+   ORDER BY created_at DESC LIMIT 20"
+```
+
+### List All Pending Events
+```bash
+# Inline SQL (works with or without CLI)
+sqlite3 ~/.config/opencode/makiso/events.db \
+  "SELECT id, topic, substr(body, 1, 80), status FROM events
+   WHERE status = 'pending' ORDER BY created_at DESC LIMIT 20"
+```
+
+### Topics Management
+```bash
+# CLI (preferred)
+oc-events topics list
+oc-events topics create <topic> --prompt "..." --description "..."
+
+# Inline SQL (fallback)
+sqlite3 -json ~/.config/opencode/makiso/events.db "SELECT * FROM topics"
+sqlite3 ~/.config/opencode/makiso/events.db \
+  "INSERT INTO topics (name, system_prompt, description, created_at)
+   VALUES ('<topic>', 'prompt text', 'description', $(date +%s)000)"
+```
+
+### Cleanup Old Events
+```bash
+# CLI (preferred)
+oc-events cleanup --completed-days 30 --pending-days 7
+
+# Inline SQL (fallback) - delete completed older than 30 days
+sqlite3 ~/.config/opencode/makiso/events.db \
+  "DELETE FROM events WHERE status='completed'
+   AND created_at < ($(date +%s) - 30*86400) * 1000"
+```
 
 ## Investigation Patterns
 
@@ -388,10 +566,6 @@ Comments: 0 unresolved
 - Data directory: `~/.config/opencode/makiso/`
 - Prompts directory: `~/.config/opencode/makiso/prompts/`
 - Database: `~/.config/opencode/makiso/events.db`
-- Debug log: `~/.config/opencode/makiso/plugin.log`
 
-Environment variables:
+Environment variables (for CLI, optional):
 - `OC_AGENT_ID` - Agent identity (default: `@opencode`)
-- `OC_EVENTS_TOPIC` - Plugin polling topic (default: `inbox`)
-- `OC_EVENTS_POLL_INTERVAL_MS` - Polling interval (default: `60000`)
-- `OC_EVENTS_DEBUG` - Enable debug logging (set to `1`)
