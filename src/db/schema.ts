@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -19,6 +19,10 @@ CREATE TABLE IF NOT EXISTS events (
   parent_id TEXT,
   status TEXT NOT NULL DEFAULT 'pending',
   source TEXT NOT NULL DEFAULT 'agent',
+  org_id TEXT,
+  workspace_id TEXT,
+  project_id TEXT,
+  repo_id TEXT,
   created_at INTEGER NOT NULL,
   processed_at INTEGER,
   claimed_by TEXT,
@@ -31,6 +35,10 @@ CREATE INDEX IF NOT EXISTS idx_events_topic_status ON events(topic, status);
 CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at);
 CREATE INDEX IF NOT EXISTS idx_events_correlation_id ON events(correlation_id);
 CREATE INDEX IF NOT EXISTS idx_events_claimed_by ON events(claimed_by);
+CREATE INDEX IF NOT EXISTS idx_events_org_topic_status_created ON events(org_id, topic, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_events_org_workspace_topic_status_created ON events(org_id, workspace_id, topic, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_events_org_project_topic_status_created ON events(org_id, project_id, topic, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_events_org_repo_topic_status_created ON events(org_id, repo_id, topic, status, created_at);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
   body,

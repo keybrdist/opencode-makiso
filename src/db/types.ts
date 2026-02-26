@@ -1,6 +1,14 @@
 export type EventStatus = "pending" | "processing" | "completed" | "failed";
+export type ScopeLevel = "repo" | "project" | "workspace" | "org";
 
-export type EventRecord = {
+export type EventScope = {
+  org_id: string;
+  workspace_id: string | null;
+  project_id: string | null;
+  repo_id: string | null;
+};
+
+export type EventRecord = EventScope & {
   id: string;
   topic: string;
   body: string;

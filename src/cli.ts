@@ -1,13 +1,22 @@
 #!/usr/bin/env node
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import fs from "node:fs";
 import { getDefaultConfig } from "./config.js";
+import {
+  clearSavedContext,
+  getStoredContext,
+  resolveScopeContext,
+  saveContext,
+  type ScopeInputOptions
+} from "./context.js";
 import { openDatabase } from "./db/client.js";
 import { cleanupEvents } from "./db/cleanup.js";
-import { insertEvent, claimNextEvent, updateEventStatus } from "./db/events.js";
+import { claimNextEvent, insertEvent, updateEventStatus } from "./db/events.js";
 import { insertMentions } from "./db/mentions.js";
+import { buildScopeCondition, normalizeScopeLevel } from "./db/scope.js";
 import { insertToolCalls } from "./db/tools.js";
 import { getTopicByName, listTopics, upsertTopic } from "./db/topics.js";
+import type { ScopeLevel } from "./db/types.js";
 
 const program = new Command();
 
@@ -17,66 +26,124 @@ const ensureDataDir = (dataDir: string) => {
   }
 };
 
+const openDb = () => {
+  const config = getDefaultConfig();
+  ensureDataDir(config.dataDir);
+  const db = openDatabase({ path: config.dbPath, defaultOrg: config.defaultOrg });
+  return { config, db };
+};
+
+const addScopeOptions = (
+  command: Command,
+  options?: { includeScopeLevel?: boolean; includeUnscoped?: boolean }
+): Command => {
+  command
+    .option("--org <id>", "organization identifier")
+    .option("--workspace <id>", "workspace identifier")
+    .option("--project <id>", "project identifier")
+    .option("--repo <id>", "repository identifier");
+
+  if (options?.includeScopeLevel) {
+    command.addOption(
+      new Option("--scope <level>", "scope level").choices([
+        "repo",
+        "project",
+        "workspace",
+        "org"
+      ])
+    );
+  }
+
+  if (options?.includeUnscoped) {
+    command.option("--include-unscoped", "include events without org scope");
+  }
+
+  return command;
+};
+
+const resolveScopedOptions = (
+  db: ReturnType<typeof openDb>["db"],
+  config: ReturnType<typeof openDb>["config"],
+  options: ScopeInputOptions
+) => {
+  const scope = resolveScopeContext(db, config, options);
+  const scopeLevel = normalizeScopeLevel(scope, options.scope);
+  return {
+    scope,
+    scopeLevel,
+    includeUnscoped: Boolean(options.includeUnscoped)
+  };
+};
+
 program
   .name("oc-events")
   .description("Local-first event bus for OpenCode agents")
-  .version("0.1.0");
+  .version("0.2.0");
 
-program
-  .command("push")
-  .description("Publish an event")
-  .argument("<topic>", "event topic")
-  .requiredOption("--body <text>", "event body")
-  .option("--meta <json>", "metadata JSON")
-  .option("--correlation-id <id>", "correlation id")
-  .option("--parent-id <id>", "parent event id")
-  .option("--source <source>", "event source", "agent")
-  .action((topic, options) => {
-    const config = getDefaultConfig();
-    ensureDataDir(config.dataDir);
-    const db = openDatabase({ path: config.dbPath });
-
-    const event = insertEvent(db, {
-      topic,
-      body: options.body,
-      metadata: options.meta ?? null,
-      correlationId: options.correlationId ?? null,
-      parentId: options.parentId ?? null,
-      source: options.source
-    });
-
-    insertMentions(db, event.id, event.body);
-    insertToolCalls(db, event.id, event.body);
-
-    process.stdout.write(JSON.stringify(event, null, 2));
-    process.stdout.write("\n");
+addScopeOptions(
+  program
+    .command("push")
+    .description("Publish an event")
+    .argument("<topic>", "event topic")
+    .requiredOption("--body <text>", "event body")
+    .option("--meta <json>", "metadata JSON")
+    .option("--correlation-id <id>", "correlation id")
+    .option("--parent-id <id>", "parent event id")
+    .option("--source <source>", "event source", "agent")
+).action((topic, options) => {
+  const { config, db } = openDb();
+  const scopedOptions = resolveScopedOptions(db, config, options);
+  const event = insertEvent(db, {
+    topic,
+    body: options.body,
+    metadata: options.meta ?? null,
+    correlationId: options.correlationId ?? null,
+    parentId: options.parentId ?? null,
+    source: options.source,
+    orgId: scopedOptions.scope.org_id,
+    workspaceId: scopedOptions.scope.workspace_id,
+    projectId: scopedOptions.scope.project_id,
+    repoId: scopedOptions.scope.repo_id
   });
 
-program
-  .command("pull")
-  .description("Claim the next pending event for a topic")
-  .argument("<topic>", "event topic")
-  .requiredOption("--agent <id>", "agent identifier")
-  .action((topic, options) => {
-    const config = getDefaultConfig();
-    ensureDataDir(config.dataDir);
-    const db = openDatabase({ path: config.dbPath });
+  insertMentions(db, event.id, event.body);
+  insertToolCalls(db, event.id, event.body);
 
-    const event = claimNextEvent(db, { topic, agent: options.agent });
-    if (!event) {
-      process.stdout.write("\n");
-      return;
-    }
+  process.stdout.write(JSON.stringify(event, null, 2));
+  process.stdout.write("\n");
+});
 
-    const topicRow = getTopicByName(db, topic);
-    const payload = {
-      ...event,
-      system_prompt: topicRow?.system_prompt ?? null
-    };
-
-    process.stdout.write(JSON.stringify(payload, null, 2));
-    process.stdout.write("\n");
+addScopeOptions(
+  program
+    .command("pull")
+    .description("Claim the next pending event for a topic")
+    .argument("<topic>", "event topic")
+    .requiredOption("--agent <id>", "agent identifier"),
+  { includeScopeLevel: true, includeUnscoped: true }
+).action((topic, options) => {
+  const { config, db } = openDb();
+  const scopedOptions = resolveScopedOptions(db, config, options);
+  const event = claimNextEvent(db, {
+    topic,
+    agent: options.agent,
+    scope: scopedOptions.scope,
+    scopeLevel: scopedOptions.scopeLevel,
+    includeUnscoped: scopedOptions.includeUnscoped
   });
+  if (!event) {
+    process.stdout.write("\n");
+    return;
+  }
+
+  const topicRow = getTopicByName(db, topic);
+  const payload = {
+    ...event,
+    system_prompt: topicRow?.system_prompt ?? null
+  };
+
+  process.stdout.write(JSON.stringify(payload, null, 2));
+  process.stdout.write("\n");
+});
 
 program
   .command("reply")
@@ -87,13 +154,20 @@ program
   .option("--meta <json>", "metadata JSON")
   .option("--source <source>", "event source", "agent")
   .action((id, options) => {
-    const config = getDefaultConfig();
-    ensureDataDir(config.dataDir);
-    const db = openDatabase({ path: config.dbPath });
+    const { config, db } = openDb();
 
     const original = db
       .prepare("SELECT * FROM events WHERE id = ?")
-      .get(id) as { correlation_id?: string; topic?: string } | undefined;
+      .get(id) as
+      | {
+          correlation_id?: string;
+          topic?: string;
+          org_id?: string | null;
+          workspace_id?: string | null;
+          project_id?: string | null;
+          repo_id?: string | null;
+        }
+      | undefined;
 
     if (!original?.topic) {
       process.stderr.write(`Event not found: ${id}\n`);
@@ -101,14 +175,18 @@ program
     }
 
     updateEventStatus(db, id, options.status);
-
+    const fallbackScope = resolveScopeContext(db, config, {});
     const reply = insertEvent(db, {
       topic: original.topic,
       body: options.body,
       metadata: options.meta ?? null,
       correlationId: original.correlation_id ?? id,
       parentId: id,
-      source: options.source
+      source: options.source,
+      orgId: original.org_id ?? fallbackScope.org_id,
+      workspaceId: original.workspace_id ?? fallbackScope.workspace_id,
+      projectId: original.project_id ?? fallbackScope.project_id,
+      repoId: original.repo_id ?? fallbackScope.repo_id
     });
 
     insertMentions(db, reply.id, reply.body);
@@ -118,68 +196,82 @@ program
     process.stdout.write("\n");
   });
 
-program
-  .command("query")
-  .description("Query events by mention or tool")
-  .option("--mention <mention>", "mention to filter")
-  .option("--tool <tool>", "tool name to filter")
-  .action((options) => {
-    const config = getDefaultConfig();
-    ensureDataDir(config.dataDir);
-    const db = openDatabase({ path: config.dbPath });
-
-    if (options.mention) {
-      const rows = db
-        .prepare(
-          `SELECT events.* FROM events
-           INNER JOIN mentions ON mentions.event_id = events.id
-           WHERE mentions.mention = ?
-           ORDER BY events.created_at DESC`
-        )
-        .all(options.mention);
-      process.stdout.write(JSON.stringify(rows, null, 2));
-      process.stdout.write("\n");
-      return;
-    }
-
-    if (options.tool) {
-      const rows = db
-        .prepare(
-          `SELECT events.* FROM events
-           INNER JOIN tool_calls ON tool_calls.event_id = events.id
-           WHERE tool_calls.tool_name = ?
-           ORDER BY events.created_at DESC`
-        )
-        .all(options.tool);
-      process.stdout.write(JSON.stringify(rows, null, 2));
-      process.stdout.write("\n");
-      return;
-    }
-
-    process.stdout.write("[]\n");
+addScopeOptions(
+  program
+    .command("query")
+    .description("Query events by mention or tool")
+    .option("--mention <mention>", "mention to filter")
+    .option("--tool <tool>", "tool name to filter"),
+  { includeScopeLevel: true, includeUnscoped: true }
+).action((options) => {
+  const { config, db } = openDb();
+  const scopedOptions = resolveScopedOptions(db, config, options);
+  const scopeCondition = buildScopeCondition({
+    scope: scopedOptions.scope,
+    scopeLevel: scopedOptions.scopeLevel,
+    includeUnscoped: scopedOptions.includeUnscoped,
+    tableAlias: "events"
   });
 
-program
-  .command("search")
-  .description("Full-text search event bodies")
-  .argument("<query>", "search query")
-  .action((query) => {
-    const config = getDefaultConfig();
-    ensureDataDir(config.dataDir);
-    const db = openDatabase({ path: config.dbPath });
-
+  if (options.mention) {
     const rows = db
       .prepare(
         `SELECT events.* FROM events
-         INNER JOIN events_fts ON events_fts.rowid = events.rowid
-         WHERE events_fts MATCH ?
+         INNER JOIN mentions ON mentions.event_id = events.id
+         WHERE mentions.mention = ? AND ${scopeCondition.sql}
          ORDER BY events.created_at DESC`
       )
-      .all(query);
-
+      .all(options.mention, ...scopeCondition.params);
     process.stdout.write(JSON.stringify(rows, null, 2));
     process.stdout.write("\n");
+    return;
+  }
+
+  if (options.tool) {
+    const rows = db
+      .prepare(
+        `SELECT events.* FROM events
+         INNER JOIN tool_calls ON tool_calls.event_id = events.id
+         WHERE tool_calls.tool_name = ? AND ${scopeCondition.sql}
+         ORDER BY events.created_at DESC`
+      )
+      .all(options.tool, ...scopeCondition.params);
+    process.stdout.write(JSON.stringify(rows, null, 2));
+    process.stdout.write("\n");
+    return;
+  }
+
+  process.stdout.write("[]\n");
+});
+
+addScopeOptions(
+  program
+    .command("search")
+    .description("Full-text search event bodies")
+    .argument("<query>", "search query"),
+  { includeScopeLevel: true, includeUnscoped: true }
+).action((query, options) => {
+  const { config, db } = openDb();
+  const scopedOptions = resolveScopedOptions(db, config, options);
+  const scopeCondition = buildScopeCondition({
+    scope: scopedOptions.scope,
+    scopeLevel: scopedOptions.scopeLevel,
+    includeUnscoped: scopedOptions.includeUnscoped,
+    tableAlias: "events"
   });
+
+  const rows = db
+    .prepare(
+      `SELECT events.* FROM events
+       INNER JOIN events_fts ON events_fts.rowid = events.rowid
+       WHERE events_fts MATCH ? AND ${scopeCondition.sql}
+       ORDER BY events.created_at DESC`
+    )
+    .all(query, ...scopeCondition.params);
+
+  process.stdout.write(JSON.stringify(rows, null, 2));
+  process.stdout.write("\n");
+});
 
 program
   .command("status")
@@ -187,10 +279,7 @@ program
   .argument("<id>", "event id")
   .requiredOption("--set <status>", "pending|processing|completed|failed")
   .action((id, options) => {
-    const config = getDefaultConfig();
-    ensureDataDir(config.dataDir);
-    const db = openDatabase({ path: config.dbPath });
-
+    const { db } = openDb();
     const updated = updateEventStatus(db, id, options.set);
     if (!updated) {
       process.stderr.write(`Event not found: ${id}\n`);
@@ -201,16 +290,64 @@ program
     process.stdout.write("\n");
   });
 
+const contextCommand = program.command("context").description("Manage scope context");
+
+contextCommand
+  .command("show")
+  .description("Show saved and resolved scope context")
+  .action(() => {
+    const { config, db } = openDb();
+    const stored = getStoredContext(db);
+    const resolved = resolveScopeContext(db, config, {});
+    process.stdout.write(
+      JSON.stringify(
+        {
+          stored,
+          resolved,
+          default_scope_level: normalizeScopeLevel(resolved)
+        },
+        null,
+        2
+      )
+    );
+    process.stdout.write("\n");
+  });
+
+addScopeOptions(
+  contextCommand
+    .command("set")
+    .description("Set saved scope context for future commands"),
+  { includeScopeLevel: false, includeUnscoped: false }
+).action((options) => {
+  const { config, db } = openDb();
+  const current = getStoredContext(db);
+  const saved = saveContext(db, {
+    org_id: options.org ?? current.org_id ?? config.defaultOrg,
+    workspace_id: options.workspace,
+    project_id: options.project,
+    repo_id: options.repo
+  });
+  process.stdout.write(JSON.stringify(saved, null, 2));
+  process.stdout.write("\n");
+});
+
+contextCommand
+  .command("clear")
+  .description("Clear saved scope context")
+  .action(() => {
+    const { db } = openDb();
+    clearSavedContext(db);
+    process.stdout.write(JSON.stringify({ cleared: true }, null, 2));
+    process.stdout.write("\n");
+  });
+
 const topicsCommand = program.command("topics").description("Manage topics");
 
 topicsCommand
   .command("list")
   .description("List topics")
   .action(() => {
-    const config = getDefaultConfig();
-    ensureDataDir(config.dataDir);
-    const db = openDatabase({ path: config.dbPath });
-
+    const { db } = openDb();
     const rows = listTopics(db);
     process.stdout.write(JSON.stringify(rows, null, 2));
     process.stdout.write("\n");
@@ -223,10 +360,7 @@ topicsCommand
   .requiredOption("--prompt-file <path>", "path to prompt file")
   .option("--description <text>", "topic description")
   .action((topic, options) => {
-    const config = getDefaultConfig();
-    ensureDataDir(config.dataDir);
-    const db = openDatabase({ path: config.dbPath });
-
+    const { db } = openDb();
     const prompt = fs.readFileSync(options.promptFile, "utf-8");
     const row = upsertTopic(db, {
       name: topic,
@@ -245,10 +379,7 @@ topicsCommand
   .requiredOption("--prompt <text>", "system prompt")
   .option("--description <text>", "topic description")
   .action((topic, options) => {
-    const config = getDefaultConfig();
-    ensureDataDir(config.dataDir);
-    const db = openDatabase({ path: config.dbPath });
-
+    const { db } = openDb();
     const row = upsertTopic(db, {
       name: topic,
       systemPrompt: options.prompt,
@@ -259,88 +390,118 @@ topicsCommand
     process.stdout.write("\n");
   });
 
-program
-  .command("cleanup")
-  .description("Remove old events")
-  .option("--completed-days <days>", "completed/failed retention days", "30")
-  .option("--pending-days <days>", "pending retention days", "7")
-  .action((options) => {
-    const config = getDefaultConfig();
-    ensureDataDir(config.dataDir);
-    const db = openDatabase({ path: config.dbPath });
+addScopeOptions(
+  program
+    .command("cleanup")
+    .description("Remove old events")
+    .option("--completed-days <days>", "completed/failed retention days", "30")
+    .option("--pending-days <days>", "pending retention days", "7"),
+  { includeScopeLevel: true, includeUnscoped: true }
+).action((options) => {
+  const { config, db } = openDb();
+  const completedDays = Number(options.completedDays);
+  const pendingDays = Number(options.pendingDays);
+  const scopedOptions = resolveScopedOptions(db, config, options);
+  const removed = cleanupEvents(db, {
+    completedRetentionDays: completedDays,
+    pendingRetentionDays: pendingDays,
+    scope: scopedOptions.scope,
+    scopeLevel: scopedOptions.scopeLevel,
+    includeUnscoped: scopedOptions.includeUnscoped
+  });
 
-    const completedDays = Number(options.completedDays);
-    const pendingDays = Number(options.pendingDays);
+  process.stdout.write(
+    JSON.stringify(
+      {
+        removed,
+        scope_level: scopedOptions.scopeLevel,
+        scope: scopedOptions.scope,
+        include_unscoped: scopedOptions.includeUnscoped
+      },
+      null,
+      2
+    )
+  );
+  process.stdout.write("\n");
+});
 
-    const removed = cleanupEvents(db, {
-      completedRetentionDays: completedDays,
-      pendingRetentionDays: pendingDays
+addScopeOptions(
+  program
+    .command("watch")
+    .description("Watch for new events and display them in real-time")
+    .argument("<topic>", "event topic to watch")
+    .requiredOption("--agent <id>", "agent identifier")
+    .option("--interval <ms>", "poll interval in milliseconds", "5000"),
+  { includeScopeLevel: true, includeUnscoped: true }
+).action((topic, options) => {
+  const { config, db } = openDb();
+  const interval = Number(options.interval);
+  const scopedOptions = resolveScopedOptions(db, config, options);
+
+  process.stdout.write(`\n${"=".repeat(80)}\n`);
+  process.stdout.write(`Watching topic: ${topic} (polling every ${interval}ms)\n`);
+  process.stdout.write(`Agent: ${options.agent}\n`);
+  process.stdout.write(`Scope: ${scopedOptions.scopeLevel}\n`);
+  process.stdout.write(`Press Ctrl+C to stop\n`);
+  process.stdout.write(`${"=".repeat(80)}\n\n`);
+
+  const poll = () => {
+    const event = claimNextEvent(db, {
+      topic,
+      agent: options.agent,
+      scope: scopedOptions.scope,
+      scopeLevel: scopedOptions.scopeLevel,
+      includeUnscoped: scopedOptions.includeUnscoped
     });
+    if (!event) {
+      return;
+    }
 
-    process.stdout.write(JSON.stringify({ removed }, null, 2));
-    process.stdout.write("\n");
-  });
+    const topicRow = getTopicByName(db, topic);
 
-program
-  .command("watch")
-  .description("Watch for new events and display them in real-time")
-  .argument("<topic>", "event topic to watch")
-  .requiredOption("--agent <id>", "agent identifier")
-  .option("--interval <ms>", "poll interval in milliseconds", "5000")
-  .action((topic, options) => {
-    const config = getDefaultConfig();
-    ensureDataDir(config.dataDir);
-    const db = openDatabase({ path: config.dbPath });
+    process.stdout.write(`\n${"━".repeat(80)}\n`);
+    process.stdout.write(`📬 NEW EVENT RECEIVED\n`);
+    process.stdout.write(`${"━".repeat(80)}\n`);
 
-    const interval = Number(options.interval);
-    
-    process.stdout.write(`\n${"=".repeat(80)}\n`);
-    process.stdout.write(`Watching topic: ${topic} (polling every ${interval}ms)\n`);
-    process.stdout.write(`Agent: ${options.agent}\n`);
-    process.stdout.write(`Press Ctrl+C to stop\n`);
-    process.stdout.write(`${"=".repeat(80)}\n\n`);
+    if (topicRow?.system_prompt) {
+      process.stdout.write(`\n${topicRow.system_prompt}\n\n`);
+    }
 
-    const poll = () => {
-      const event = claimNextEvent(db, { topic, agent: options.agent });
-      if (!event) {
-        return;
-      }
+    process.stdout.write(`Topic: ${event.topic}\n`);
+    process.stdout.write(`Event ID: ${event.id}\n`);
+    process.stdout.write(`Source: ${event.source}\n`);
+    process.stdout.write(`Status: ${event.status}\n`);
+    process.stdout.write(`Org: ${event.org_id}\n`);
+    if (event.workspace_id) {
+      process.stdout.write(`Workspace: ${event.workspace_id}\n`);
+    }
+    if (event.project_id) {
+      process.stdout.write(`Project: ${event.project_id}\n`);
+    }
+    if (event.repo_id) {
+      process.stdout.write(`Repo: ${event.repo_id}\n`);
+    }
+    process.stdout.write(`Created: ${new Date(event.created_at).toISOString()}\n`);
 
-      const topicRow = getTopicByName(db, topic);
-      
-      process.stdout.write(`\n${"━".repeat(80)}\n`);
-      process.stdout.write(`📬 NEW EVENT RECEIVED\n`);
-      process.stdout.write(`${"━".repeat(80)}\n`);
-      
-      if (topicRow?.system_prompt) {
-        process.stdout.write(`\n${topicRow.system_prompt}\n\n`);
-      }
-      
-      process.stdout.write(`Topic: ${event.topic}\n`);
-      process.stdout.write(`Event ID: ${event.id}\n`);
-      process.stdout.write(`Source: ${event.source}\n`);
-      process.stdout.write(`Status: ${event.status}\n`);
-      process.stdout.write(`Created: ${new Date(event.created_at).toISOString()}\n`);
-      
-      if (event.correlation_id) {
-        process.stdout.write(`Correlation ID: ${event.correlation_id}\n`);
-      }
-      
-      if (event.metadata) {
-        process.stdout.write(`\nMetadata:\n${event.metadata}\n`);
-      }
-      
-      process.stdout.write(`\n${"─".repeat(80)}\n`);
-      process.stdout.write(`${event.body}\n`);
-      process.stdout.write(`${"─".repeat(80)}\n`);
-      
-      process.stdout.write(`\nTo reply:\n`);
-      process.stdout.write(`  oc-events reply ${event.id} --status completed --body "..."\n`);
-      process.stdout.write(`${"━".repeat(80)}\n\n`);
-    };
+    if (event.correlation_id) {
+      process.stdout.write(`Correlation ID: ${event.correlation_id}\n`);
+    }
 
-    setInterval(poll, interval);
-    poll(); // Check immediately
-  });
+    if (event.metadata) {
+      process.stdout.write(`\nMetadata:\n${event.metadata}\n`);
+    }
+
+    process.stdout.write(`\n${"─".repeat(80)}\n`);
+    process.stdout.write(`${event.body}\n`);
+    process.stdout.write(`${"─".repeat(80)}\n`);
+
+    process.stdout.write(`\nTo reply:\n`);
+    process.stdout.write(`  oc-events reply ${event.id} --status completed --body "..."\n`);
+    process.stdout.write(`${"━".repeat(80)}\n\n`);
+  };
+
+  setInterval(poll, interval);
+  poll();
+});
 
 program.parse();

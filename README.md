@@ -20,6 +20,7 @@ Restart OpenCode and say **"check events"** to get started. The skill auto-boots
 - Self-bootstrapping skill that works with just `sqlite3` (no Node.js required)
 - OpenCode skill with sub-commands for pulling PRs, Jiras, and Bugs
 - Optional CLI for power users who want enhanced features
+- First-class scope boundaries for `org/workspace/project/repo`
 
 ## How It Works
 
@@ -52,10 +53,10 @@ All operations work with or without the CLI installed:
 
 | Operation | CLI | Inline SQL |
 |-----------|-----|------------|
-| Push event | `oc-events push inbox --body "..."` | `sqlite3 ~/.config/opencode/makiso/events.db "INSERT INTO events..."` |
-| Pull event | `oc-events pull inbox --agent @opencode` | `sqlite3 ~/.config/opencode/makiso/events.db "UPDATE events SET status='processing'..."` |
+| Push event | `oc-events push inbox --body "..." --org acme --repo lgapi` | `sqlite3 ~/.config/opencode/makiso/events.db "INSERT INTO events..."` |
+| Pull event | `oc-events pull inbox --agent @opencode --org acme --repo lgapi --scope repo` | `sqlite3 ~/.config/opencode/makiso/events.db "UPDATE events SET status='processing'..."` |
 | Reply | `oc-events reply <id> --status completed` | `sqlite3 ~/.config/opencode/makiso/events.db "UPDATE events SET status='completed'..."` |
-| Search | `oc-events search "query"` | `sqlite3 ~/.config/opencode/makiso/events.db "SELECT * FROM events_fts..."` |
+| Search | `oc-events search "query" --org acme --scope org` | `sqlite3 ~/.config/opencode/makiso/events.db "SELECT * FROM events_fts..."` |
 
 See the skill file for complete SQL templates.
 
@@ -68,6 +69,27 @@ All data is stored in `~/.config/opencode/makiso/`:
 ├── events.db          # SQLite database (auto-created)
 └── prompts/           # Custom prompt overrides
 ```
+
+Scope defaults can be configured globally:
+
+```bash
+export OC_EVENTS_DEFAULT_ORG=acme
+export OC_EVENTS_DEFAULT_WORKSPACE=platform
+export OC_EVENTS_DEFAULT_PROJECT=distribution
+export OC_EVENTS_DEFAULT_REPO=lgapi
+```
+
+You can also persist context in the database:
+
+```bash
+oc-events context set --org acme --workspace platform --project distribution --repo lgapi
+oc-events context show
+oc-events context clear
+```
+
+Default read/write behavior uses the resolved context and defaults to `repo` scope.  
+Cross-repo traversal is explicit with `--scope project|workspace|org`.  
+Cross-org access is explicit with `--org <id>`.
 
 ## Optional: Full CLI
 
@@ -85,12 +107,13 @@ This makes `oc-events` available globally. The skill automatically uses the CLI 
 
 | Command | Description |
 |---------|-------------|
-| `oc-events push <topic> --body "..."` | Publish an event |
-| `oc-events pull <topic> --agent <id>` | Claim the next pending event |
+| `oc-events push <topic> --body "..." [--org ... --workspace ... --project ... --repo ...]` | Publish an event |
+| `oc-events pull <topic> --agent <id> [--scope repo\|project\|workspace\|org]` | Claim the next pending event |
 | `oc-events reply <id> --status <status> --body "..."` | Reply and update status |
-| `oc-events watch <topic> --agent <id>` | Watch for events in real-time |
-| `oc-events search <query>` | Full-text search event bodies |
-| `oc-events query --mention @name` | Find events mentioning someone |
+| `oc-events watch <topic> --agent <id> [--scope ...]` | Watch for events in real-time |
+| `oc-events search <query> [--scope ...]` | Full-text search event bodies |
+| `oc-events query --mention @name [--scope ...]` | Find events mentioning someone |
+| `oc-events context show\|set\|clear` | Manage saved scope context |
 | `oc-events topics list` | List all topics |
 | `oc-events cleanup` | Remove old events |
 

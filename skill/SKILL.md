@@ -41,6 +41,10 @@ CREATE TABLE IF NOT EXISTS events (
   parent_id TEXT,
   status TEXT NOT NULL DEFAULT 'pending',
   source TEXT NOT NULL DEFAULT 'agent',
+  org_id TEXT,
+  workspace_id TEXT,
+  project_id TEXT,
+  repo_id TEXT,
   created_at INTEGER NOT NULL,
   processed_at INTEGER,
   claimed_by TEXT,
@@ -52,6 +56,10 @@ CREATE INDEX IF NOT EXISTS idx_events_topic_status ON events(topic, status);
 CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at);
 CREATE INDEX IF NOT EXISTS idx_events_correlation_id ON events(correlation_id);
 CREATE INDEX IF NOT EXISTS idx_events_claimed_by ON events(claimed_by);
+CREATE INDEX IF NOT EXISTS idx_events_org_topic_status_created ON events(org_id, topic, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_events_org_workspace_topic_status_created ON events(org_id, workspace_id, topic, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_events_org_project_topic_status_created ON events(org_id, project_id, topic, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_events_org_repo_topic_status_created ON events(org_id, repo_id, topic, status, created_at);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
   body,
@@ -111,7 +119,7 @@ Before running commands, check if CLI is available:
 ```bash
 if command -v oc-events &>/dev/null; then
   # Use CLI (preferred)
-  oc-events push inbox --body "test"
+  oc-events push inbox --body "test" --org acme --repo lgapi
 else
   # Use inline SQL (fallback)
   sqlite3 ~/.config/opencode/makiso/events.db "INSERT INTO events..."
@@ -154,15 +162,24 @@ fi
 
 When the user asks you to check for events (e.g., "check events", "any pending tasks?"):
 
+### Scope First
+```bash
+# Use saved context when available (preferred)
+oc-events context show
+
+# Or set explicit scope once per repo/session
+oc-events context set --org acme --workspace platform --project distribution --repo lgapi
+```
+
 ### Step 1: Check inbox first
 ```bash
-oc-events pull inbox --agent @opencode
+oc-events pull inbox --agent @opencode --scope repo
 ```
 
 ### Step 2: If inbox empty, check all topics for pending events
 ```bash
-# Query all pending events from database:
-sqlite3 ~/.config/opencode/makiso/events.db "SELECT id, topic, substr(body, 1, 100), status FROM events WHERE status = 'pending' ORDER BY created_at DESC LIMIT 20"
+# Query pending events in the same org/repo:
+sqlite3 ~/.config/opencode/makiso/events.db "SELECT id, topic, substr(body, 1, 100), status FROM events WHERE org_id = 'acme' AND repo_id = 'lgapi' AND status = 'pending' ORDER BY created_at DESC LIMIT 20"
 ```
 
 **IMPORTANT**: Always run Step 2 when inbox is empty. Do NOT tell the user "No events found" after only checking the inbox.
@@ -394,26 +411,32 @@ Report combined summary with unified routing recommendations.
 
 Use CLI when available; inline SQL as fallback. Database path: `~/.config/opencode/makiso/events.db`
 
+### Set Scope Context
+```bash
+oc-events context set --org acme --workspace platform --project distribution --repo lgapi
+oc-events context show
+```
+
 ### Push Event
 ```bash
 # CLI (preferred)
-oc-events push <topic> --body "message"
+oc-events push <topic> --body "message" --org acme --workspace platform --project distribution --repo lgapi
 
 # Inline SQL (fallback)
 sqlite3 ~/.config/opencode/makiso/events.db \
-  "INSERT INTO events (id, topic, body, status, source, created_at)
-   VALUES ('$(date +%s)-$$', '<topic>', 'message', 'pending', 'skill', $(date +%s)000)"
+  "INSERT INTO events (id, topic, body, status, source, org_id, workspace_id, project_id, repo_id, created_at)
+   VALUES ('$(date +%s)-$$', '<topic>', 'message', 'pending', 'skill', 'acme', 'platform', 'distribution', 'lgapi', $(date +%s)000)"
 ```
 
 ### Pull Event (claim next pending)
 ```bash
 # CLI (preferred)
-oc-events pull <topic> --agent "@opencode"
+oc-events pull <topic> --agent "@opencode" --org acme --repo lgapi --scope repo
 
 # Inline SQL (fallback) - claim and return in one query
 sqlite3 -json ~/.config/opencode/makiso/events.db \
   "UPDATE events SET status='processing', claimed_by='@opencode', claimed_at=$(date +%s)000
-   WHERE id = (SELECT id FROM events WHERE topic='<topic>' AND status='pending'
+   WHERE id = (SELECT id FROM events WHERE topic='<topic>' AND org_id='acme' AND repo_id='lgapi' AND status='pending'
    ORDER BY created_at LIMIT 1) RETURNING *"
 ```
 
@@ -434,25 +457,25 @@ Use `--status failed` or `status='failed'` for failures.
 ### Search Events
 ```bash
 # CLI (preferred)
-oc-events search "text query"
+oc-events search "text query" --org acme --scope org
 
 # Inline SQL (fallback)
 sqlite3 -json ~/.config/opencode/makiso/events.db \
   "SELECT e.* FROM events e
    JOIN events_fts fts ON e.rowid = fts.rowid
-   WHERE events_fts MATCH 'text query'
+   WHERE events_fts MATCH 'text query' AND e.org_id='acme'
    ORDER BY e.created_at DESC LIMIT 20"
 ```
 
 ### Query by Status/Topic
 ```bash
 # CLI (preferred)
-oc-events query --topic inbox --status pending
+oc-events pull inbox --agent "@opencode" --org acme --repo lgapi --scope repo
 
 # Inline SQL (fallback)
 sqlite3 -json ~/.config/opencode/makiso/events.db \
   "SELECT id, topic, substr(body, 1, 100) as body_preview, status, created_at
-   FROM events WHERE topic='inbox' AND status='pending'
+   FROM events WHERE topic='inbox' AND org_id='acme' AND repo_id='lgapi' AND status='pending'
    ORDER BY created_at DESC LIMIT 20"
 ```
 
@@ -461,7 +484,7 @@ sqlite3 -json ~/.config/opencode/makiso/events.db \
 # Inline SQL (works with or without CLI)
 sqlite3 ~/.config/opencode/makiso/events.db \
   "SELECT id, topic, substr(body, 1, 80), status FROM events
-   WHERE status = 'pending' ORDER BY created_at DESC LIMIT 20"
+   WHERE org_id='acme' AND repo_id='lgapi' AND status = 'pending' ORDER BY created_at DESC LIMIT 20"
 ```
 
 ### Topics Management

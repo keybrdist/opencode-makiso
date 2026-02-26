@@ -2,7 +2,8 @@ import { ulid } from "ulid";
 import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseClient } from "./client.js";
-import type { EventRecord, EventStatus } from "./types.js";
+import { buildScopeCondition } from "./scope.js";
+import type { EventRecord, EventScope, EventStatus, ScopeLevel } from "./types.js";
 
 // Touch trigger file to notify watchers
 const touchTrigger = () => {
@@ -25,11 +26,18 @@ export type NewEventInput = {
   parentId?: string | null;
   source?: string;
   status?: EventStatus;
+  orgId: string;
+  workspaceId?: string | null;
+  projectId?: string | null;
+  repoId?: string | null;
 };
 
 export type ClaimOptions = {
   topic: string;
   agent: string;
+  scope: EventScope;
+  scopeLevel?: ScopeLevel;
+  includeUnscoped?: boolean;
 };
 
 export const insertEvent = (db: DatabaseClient, input: NewEventInput): EventRecord => {
@@ -37,8 +45,8 @@ export const insertEvent = (db: DatabaseClient, input: NewEventInput): EventReco
   const id = ulid();
   const stmt = db.prepare(
     `INSERT INTO events (
-      id, topic, body, metadata, correlation_id, parent_id, status, source, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      id, topic, body, metadata, correlation_id, parent_id, status, source, org_id, workspace_id, project_id, repo_id, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   stmt.run(
@@ -50,6 +58,10 @@ export const insertEvent = (db: DatabaseClient, input: NewEventInput): EventReco
     input.parentId ?? null,
     input.status ?? "pending",
     input.source ?? "agent",
+    input.orgId,
+    input.workspaceId ?? null,
+    input.projectId ?? null,
+    input.repoId ?? null,
     now
   );
 
@@ -66,15 +78,22 @@ export const claimNextEvent = (
   options: ClaimOptions
 ): EventRecord | null => {
   const now = Date.now();
+  const scopeCondition = buildScopeCondition({
+    scope: options.scope,
+    scopeLevel: options.scopeLevel,
+    includeUnscoped: options.includeUnscoped,
+    tableAlias: "events"
+  });
+
   const claim = db.transaction(() => {
     const candidate = db
       .prepare(
         `SELECT id FROM events
-         WHERE topic = ? AND status = 'pending'
+         WHERE topic = ? AND status = 'pending' AND ${scopeCondition.sql}
          ORDER BY created_at ASC
          LIMIT 1`
       )
-      .get(options.topic) as { id?: string } | undefined;
+      .get(options.topic, ...scopeCondition.params) as { id?: string } | undefined;
 
     if (!candidate?.id) {
       return null;
