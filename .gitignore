@@ -27,3 +27,7 @@ dist/
 # Package manager locks (optional - uncomment if you want to exclude)
 # package-lock.json
 # bun.lockb
+
+AGENTS.md
+CLAUDE.md 
+.claude
