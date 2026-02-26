@@ -417,6 +417,24 @@ oc-events context set --org acme --workspace platform --project distribution --r
 oc-events context show
 ```
 
+### Agent Handoff Between LLMs
+```bash
+# Create a handoff and emit copy-paste prompt
+oc-events handoff push \
+  --to claude \
+  --from codex \
+  --summary "Finished queue routing changes" \
+  --goal "Run validation and open PR" \
+  --next "Run tests,Fix failures,Open PR" \
+  --files "src/cli.ts,src/db/events.ts" \
+  --copy
+
+# Pull handoff for target agent
+oc-events handoff pull --for claude --agent @claude --scope repo --copy
+```
+
+Use this when switching from one coding agent to another and you want a clean first prompt.
+
 ### Push Event
 ```bash
 # CLI (preferred)

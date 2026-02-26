@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { Command, Option } from "commander";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { getDefaultConfig } from "./config.js";
 import {
@@ -12,6 +13,7 @@ import {
 import { openDatabase } from "./db/client.js";
 import { cleanupEvents } from "./db/cleanup.js";
 import { claimNextEvent, insertEvent, updateEventStatus } from "./db/events.js";
+import { claimNextHandoffEvent } from "./db/handoffs.js";
 import { insertMentions } from "./db/mentions.js";
 import { buildScopeCondition, normalizeScopeLevel } from "./db/scope.js";
 import { insertToolCalls } from "./db/tools.js";
@@ -73,6 +75,234 @@ const resolveScopedOptions = (
     scopeLevel,
     includeUnscoped: Boolean(options.includeUnscoped)
   };
+};
+
+const normalizeAgent = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  if (trimmed.startsWith("@")) {
+    return trimmed;
+  }
+  return `@${trimmed}`;
+};
+
+const plainAgent = (value: string): string => normalizeAgent(value).replace(/^@/, "");
+
+const parseList = (value?: string): string[] => {
+  if (!value) {
+    return [];
+  }
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => Boolean(item));
+};
+
+const toJsonObject = (value?: string): Record<string, unknown> => {
+  if (!value) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    return {};
+  } catch {
+    return {};
+  }
+};
+
+const detectBranch = (cwd: string): string | null => {
+  try {
+    const branch = execFileSync("git", ["branch", "--show-current"], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+    return branch || null;
+  } catch {
+    return null;
+  }
+};
+
+const copyToClipboard = (text: string): string | null => {
+  const candidates: Array<{ command: string; args: string[] }> = [
+    { command: "pbcopy", args: [] },
+    { command: "wl-copy", args: [] },
+    { command: "xclip", args: ["-selection", "clipboard"] }
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      const result = spawnSync(candidate.command, candidate.args, { input: text });
+      if (result.status === 0) {
+        return candidate.command;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+};
+
+type HandoffPayload = {
+  version: number;
+  topic: string;
+  to_agent: string;
+  from_agent: string;
+  summary: string;
+  goal: string | null;
+  cwd: string | null;
+  branch: string | null;
+  files: string[];
+  next_steps: string[];
+  constraints: string[];
+  open_questions: string[];
+  launch_hint: string | null;
+  created_at: string;
+};
+
+const commandForAgent = (agent: string): string => {
+  const normalized = plainAgent(agent).toLowerCase();
+  if (normalized === "claude") {
+    return "claude";
+  }
+  if (normalized === "codex") {
+    return "codex";
+  }
+  if (normalized === "opencode") {
+    return "opencode";
+  }
+  return normalized;
+};
+
+const buildHandoffPrompt = (payload: HandoffPayload): string => {
+  const lines = [
+    "=== BEGIN AGENT HANDOFF ===",
+    "You are taking over an in-progress task.",
+    "",
+    `From Agent: ${payload.from_agent}`,
+    `To Agent: ${payload.to_agent}`,
+    `Project Path: ${payload.cwd ?? "unknown"}`,
+    `Branch: ${payload.branch ?? "unknown"}`,
+    `Summary: ${payload.summary}`
+  ];
+
+  if (payload.goal) {
+    lines.push(`Goal: ${payload.goal}`);
+  }
+
+  lines.push("");
+  lines.push("Files Changed:");
+  if (payload.files.length) {
+    for (const file of payload.files) {
+      lines.push(`- ${file}`);
+    }
+  } else {
+    lines.push("- none provided");
+  }
+
+  lines.push("");
+  lines.push("Next Steps:");
+  if (payload.next_steps.length) {
+    payload.next_steps.forEach((step, index) => {
+      lines.push(`${index + 1}. ${step}`);
+    });
+  } else {
+    lines.push("1. Continue from current summary");
+  }
+
+  if (payload.constraints.length) {
+    lines.push("");
+    lines.push("Constraints:");
+    for (const constraint of payload.constraints) {
+      lines.push(`- ${constraint}`);
+    }
+  }
+
+  if (payload.open_questions.length) {
+    lines.push("");
+    lines.push("Open Questions:");
+    for (const question of payload.open_questions) {
+      lines.push(`- ${question}`);
+    }
+  }
+
+  if (payload.launch_hint) {
+    lines.push("");
+    lines.push(`Suggested launch command: ${payload.launch_hint}`);
+  }
+
+  lines.push("=== END AGENT HANDOFF ===");
+  return lines.join("\n");
+};
+
+const payloadFromMetadata = (
+  metadata: string | null,
+  fallback: {
+    toAgent: string;
+    fromAgent: string;
+    summary: string;
+    cwd: string | null;
+    branch: string | null;
+  }
+): HandoffPayload => {
+  try {
+    const parsed = JSON.parse(metadata ?? "{}") as {
+      handoff?: Partial<HandoffPayload>;
+      to_agent?: string;
+      from_agent?: string;
+      summary?: string;
+      cwd?: string | null;
+      branch?: string | null;
+    };
+    const handoff = parsed.handoff ?? {};
+    return {
+      version: Number(handoff.version ?? 1),
+      topic: String(handoff.topic ?? "session-handoff"),
+      to_agent: String(handoff.to_agent ?? parsed.to_agent ?? fallback.toAgent),
+      from_agent: String(handoff.from_agent ?? parsed.from_agent ?? fallback.fromAgent),
+      summary: String(handoff.summary ?? parsed.summary ?? fallback.summary),
+      goal: handoff.goal ? String(handoff.goal) : null,
+      cwd: handoff.cwd ? String(handoff.cwd) : fallback.cwd,
+      branch: handoff.branch ? String(handoff.branch) : fallback.branch,
+      files: Array.isArray(handoff.files)
+        ? handoff.files.map((item) => String(item))
+        : [],
+      next_steps: Array.isArray(handoff.next_steps)
+        ? handoff.next_steps.map((item) => String(item))
+        : [],
+      constraints: Array.isArray(handoff.constraints)
+        ? handoff.constraints.map((item) => String(item))
+        : [],
+      open_questions: Array.isArray(handoff.open_questions)
+        ? handoff.open_questions.map((item) => String(item))
+        : [],
+      launch_hint: handoff.launch_hint ? String(handoff.launch_hint) : null,
+      created_at: handoff.created_at ? String(handoff.created_at) : new Date().toISOString()
+    };
+  } catch {
+    return {
+      version: 1,
+      topic: "session-handoff",
+      to_agent: fallback.toAgent,
+      from_agent: fallback.fromAgent,
+      summary: fallback.summary,
+      goal: null,
+      cwd: fallback.cwd,
+      branch: fallback.branch,
+      files: [],
+      next_steps: [],
+      constraints: [],
+      open_questions: [],
+      launch_hint: null,
+      created_at: new Date().toISOString()
+    };
+  }
 };
 
 program
@@ -289,6 +519,156 @@ program
     process.stdout.write(JSON.stringify(updated, null, 2));
     process.stdout.write("\n");
   });
+
+const handoffCommand = program.command("handoff").description("Create and consume agent handoffs");
+
+addScopeOptions(
+  handoffCommand
+    .command("push")
+    .description("Publish a session handoff event and emit a copy-paste prompt")
+    .requiredOption("--to <agent>", "target agent (e.g. claude, codex, opencode)")
+    .requiredOption("--summary <text>", "short handoff summary")
+    .option("--from <agent>", "source agent", "@opencode")
+    .option("--goal <text>", "overall goal")
+    .option("--cwd <path>", "project path", process.cwd())
+    .option("--branch <name>", "git branch name")
+    .option("--files <items>", "comma-separated files")
+    .option("--next <items>", "comma-separated next steps")
+    .option("--constraints <items>", "comma-separated constraints")
+    .option("--questions <items>", "comma-separated open questions")
+    .option("--launch <command>", "launch command hint for target agent")
+    .option("--topic <topic>", "handoff topic", "session-handoff")
+    .option("--meta <json>", "additional metadata JSON object")
+    .option("--copy", "copy prompt to clipboard when possible"),
+  { includeScopeLevel: false, includeUnscoped: false }
+).action((options) => {
+  const { config, db } = openDb();
+  const scopedOptions = resolveScopedOptions(db, config, options);
+  const toAgent = normalizeAgent(options.to);
+  const fromAgent = normalizeAgent(options.from);
+  const cwd = options.cwd ?? process.cwd();
+  const branch = options.branch ?? detectBranch(cwd);
+  const launchHint = options.launch ?? commandForAgent(toAgent);
+
+  const payload: HandoffPayload = {
+    version: 1,
+    topic: options.topic,
+    to_agent: toAgent,
+    from_agent: fromAgent,
+    summary: options.summary,
+    goal: options.goal ?? null,
+    cwd,
+    branch,
+    files: parseList(options.files),
+    next_steps: parseList(options.next),
+    constraints: parseList(options.constraints),
+    open_questions: parseList(options.questions),
+    launch_hint: launchHint,
+    created_at: new Date().toISOString()
+  };
+
+  const baseMeta = toJsonObject(options.meta);
+  const metadata = JSON.stringify({
+    ...baseMeta,
+    type: "session_handoff",
+    handoff: payload
+  });
+
+  const eventBody = [
+    `Agent handoff ${fromAgent} -> ${toAgent}`,
+    `Summary: ${payload.summary}`,
+    payload.goal ? `Goal: ${payload.goal}` : null,
+    `Path: ${payload.cwd ?? "unknown"}`,
+    `Branch: ${payload.branch ?? "unknown"}`,
+    `Mentions: ${fromAgent} ${toAgent}`
+  ]
+    .filter((item) => Boolean(item))
+    .join("\n");
+
+  const event = insertEvent(db, {
+    topic: options.topic,
+    body: eventBody,
+    metadata,
+    source: "handoff",
+    orgId: scopedOptions.scope.org_id,
+    workspaceId: scopedOptions.scope.workspace_id,
+    projectId: scopedOptions.scope.project_id,
+    repoId: scopedOptions.scope.repo_id
+  });
+
+  insertMentions(db, event.id, event.body);
+  insertToolCalls(db, event.id, event.body);
+
+  const prompt = buildHandoffPrompt(payload);
+  const clipboard = options.copy ? copyToClipboard(prompt) : null;
+
+  process.stdout.write(
+    JSON.stringify(
+      {
+        event,
+        launch_command: launchHint,
+        prompt,
+        copied_with: clipboard
+      },
+      null,
+      2
+    )
+  );
+  process.stdout.write("\n");
+});
+
+addScopeOptions(
+  handoffCommand
+    .command("pull")
+    .description("Claim the next handoff intended for an agent and emit resume prompt")
+    .requiredOption("--for <agent>", "target agent identity")
+    .option("--agent <id>", "claimer identity", "@handoff")
+    .option("--topic <topic>", "handoff topic", "session-handoff")
+    .option("--copy", "copy prompt to clipboard when possible"),
+  { includeScopeLevel: true, includeUnscoped: true }
+).action((options) => {
+  const { config, db } = openDb();
+  const scopedOptions = resolveScopedOptions(db, config, options);
+  const recipient = normalizeAgent(options.for);
+  const claimer = normalizeAgent(options.agent);
+  const event = claimNextHandoffEvent(db, {
+    topic: options.topic,
+    agent: claimer,
+    recipient,
+    scope: scopedOptions.scope,
+    scopeLevel: scopedOptions.scopeLevel,
+    includeUnscoped: scopedOptions.includeUnscoped
+  });
+
+  if (!event) {
+    process.stdout.write("\n");
+    return;
+  }
+
+  const payload = payloadFromMetadata(event.metadata, {
+    toAgent: recipient,
+    fromAgent: "@unknown",
+    summary: event.body,
+    cwd: null,
+    branch: null
+  });
+  const prompt = buildHandoffPrompt(payload);
+  const clipboard = options.copy ? copyToClipboard(prompt) : null;
+
+  process.stdout.write(
+    JSON.stringify(
+      {
+        event,
+        prompt,
+        launch_command: payload.launch_hint ?? commandForAgent(recipient),
+        copied_with: clipboard
+      },
+      null,
+      2
+    )
+  );
+  process.stdout.write("\n");
+});
 
 const contextCommand = program.command("context").description("Manage scope context");
 
