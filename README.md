@@ -1,11 +1,12 @@
-# makiso - local-first agent workflow coordination
+# makiso - local-first agent handoff and workflow coordination
 
-Local-first coordination layer for OpenCode agents with scoped routing, workflow intake, and durable execution history.
+Portable handoffs between Claude, Codex, and OpenCode with scoped, local-first workflow coordination.
 
 **Name origin:** "Make it so"
 
 ## Why Makiso
 
+- Hand off in-progress work between Claude, Codex, and OpenCode with copy-paste resume prompts
 - Route work safely across `org/workspace/project/repo` boundaries without cross-repo bleed
 - Convert PR/Jira/Bugs queues into actionable events with `.check-prs`, `.check-jira`, `.checkbugs`, and `.checkall`
 - Keep coordination auditable and searchable in SQLite + FTS5
@@ -22,11 +23,33 @@ curl -sL https://raw.githubusercontent.com/keybrdist/opencode-makiso/main/skill/
 
 Restart OpenCode and say **"check events"** to get started. The skill auto-bootstraps the SQLite database on first use using the pre-installed `sqlite3` command.
 
+## Fastest Path: Agent Handoff
+
+Create a handoff:
+
+```bash
+oc-events handoff push \
+  --to claude \
+  --from codex \
+  --summary "Implemented scoped events and migrations" \
+  --goal "Finish docs and open PR" \
+  --next "Run smoke tests,Prepare commit,Open PR" \
+  --files "src/cli.ts,src/db/schema.ts" \
+  --copy
+```
+
+Resume from a handoff:
+
+```bash
+oc-events handoff pull --for claude --agent @claude --scope repo --copy
+```
+
 ## Core Capabilities
 
+- Portable session handoff payloads and prompts for cross-agent continuity
 - SQLite + FTS5 event store optimized for @mentions and tool-call lookup
 - Self-bootstrapping skill that works with just `sqlite3` (no Node.js required)
-- OpenCode skill with sub-commands for pulling PRs, Jiras, and Bugs
+- OpenCode skill with sub-commands for pulling PRs, Jira issues, and Bugs
 - Optional CLI for power users who want enhanced features
 - First-class scope boundaries for `org/workspace/project/repo`
 
@@ -63,6 +86,7 @@ All operations work with or without the CLI installed:
 |-----------|-----|------------|
 | Push event | `oc-events push inbox --body "..." --org acme --repo lgapi` | `sqlite3 ~/.config/opencode/makiso/events.db "INSERT INTO events..."` |
 | Pull event | `oc-events pull inbox --agent @opencode --org acme --repo lgapi --scope repo` | `sqlite3 ~/.config/opencode/makiso/events.db "UPDATE events SET status='processing'..."` |
+| Handoff session | `oc-events handoff push --to claude --summary "..."` then `oc-events handoff pull --for claude --scope repo` | Store/retrieve `topic='session-handoff'` events with JSON payload in `metadata` |
 | Reply | `oc-events reply <id> --status completed` | `sqlite3 ~/.config/opencode/makiso/events.db "UPDATE events SET status='completed'..."` |
 | Search | `oc-events search "query" --org acme --scope org` | `sqlite3 ~/.config/opencode/makiso/events.db "SELECT * FROM events_fts..."` |
 
@@ -101,28 +125,25 @@ Cross-org access is explicit with `--org <id>`.
 
 ## Agent Handoff
 
-Makiso now supports portable handoff prompts for switching between coding agents.
+Makiso supports portable handoff payloads for switching between coding agents.
+Use the `handoff push` and `handoff pull` examples in **Fastest Path: Agent Handoff** above.
 
-Create a handoff for another agent:
+What gets transferred in a handoff payload:
 
-```bash
-oc-events handoff push \
-  --to claude \
-  --from codex \
-  --summary "Implemented scoped events and migrations" \
-  --goal "Finish docs and open PR" \
-  --next "Run smoke tests,Prepare commit,Open PR" \
-  --files "src/cli.ts,src/db/schema.ts" \
-  --copy
-```
+- Source and target agent (`from_agent`, `to_agent`)
+- Summary and optional goal
+- Working directory and git branch
+- Changed files, next steps, constraints, open questions
+- Suggested launch command for the target agent
 
-Pull a handoff for an agent:
+Both commands return JSON with:
 
-```bash
-oc-events handoff pull --for claude --agent @claude --scope repo --copy
-```
+- `event` (the claimed/published event record)
+- `prompt` (ready-to-paste resume prompt)
+- `launch_command` (agent launch hint)
+- `copied_with` (clipboard tool used, when `--copy` succeeds)
 
-Both commands return JSON with an `event` and a ready-to-paste `prompt`.
+The default handoff topic is `session-handoff`.
 
 ## Optional: Full CLI
 
@@ -148,8 +169,8 @@ This makes `oc-events` available globally. The skill automatically uses the CLI 
 | `oc-events search <query> [--scope ...] [--include-unscoped]` | Full-text search event bodies |
 | `oc-events query --mention @name [--scope ...] [--include-unscoped]` | Find events mentioning someone |
 | `oc-events context show\|set\|clear` | Manage saved scope context |
-| `oc-events handoff push ...` | Create a session handoff event with a copy-paste prompt |
-| `oc-events handoff pull ...` | Claim the next handoff for an agent and emit its prompt |
+| `oc-events handoff push --to <agent> --summary "..." [--from ... --goal ... --files ... --next ... --constraints ... --questions ... --launch ... --copy]` | Publish a session handoff payload and emit a copy-paste resume prompt |
+| `oc-events handoff pull --for <agent> [--agent ... --scope ... --include-unscoped --copy]` | Claim the next handoff for an agent and emit its resume prompt |
 | `oc-events topics list` | List all topics |
 | `oc-events topics create <topic> --prompt "..."` | Create a topic prompt inline |
 | `oc-events topics set-prompt <topic> --prompt-file <path>` | Set a topic prompt from file |
