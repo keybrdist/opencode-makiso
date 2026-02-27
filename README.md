@@ -1,4 +1,4 @@
-# makiso - local-first agent handoff and workflow coordination
+# makiso - Local-first Agent Handoff & Workflow Coordination
 
 Portable handoffs between Claude, Codex, and OpenCode with scoped, local-first workflow coordination.
 
