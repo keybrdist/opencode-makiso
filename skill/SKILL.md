@@ -1,7 +1,7 @@
 ---
 name: makiso
-description: Publish, pull, search, and reply to OpenCode events with PR/Jira integration
-argument-hint: e.g. "check events", ".check-prs", ".check-jira", ".checkbugs"
+description: Agent handoff and event coordination with PR/Jira integration
+argument-hint: e.g. "handoff push", "handoff pull", "check events", ".check-prs", ".checkall"
 ---
 
 # OpenCode Makiso
