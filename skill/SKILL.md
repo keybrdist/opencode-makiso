@@ -435,6 +435,8 @@ oc-events handoff pull --for claude --agent @claude --scope repo --copy
 
 Use this when switching from one coding agent to another and you want a clean first prompt.
 
+**Tip:** Use `/makiso-handoff` to auto-summarize the current session into a handoff — no manual field entry needed.
+
 ### Push Event
 ```bash
 # CLI (preferred)
