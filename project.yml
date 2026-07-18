@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=.constellation/project.schema.json
+config_version: 1
+project:
+  id: opencode-makiso
+  name: Makiso (agent handoff CLI)
+  family: studio
+git_host:
+  provider: github
+  slug: keybrdist/opencode-makiso
+tracker:
+  adapter: github
+  project_key: keybrdist/opencode-makiso
+deploy:
+  provider: npm
+  method: registry-publish
+loops: []
+ci:
+  provider: unknown
